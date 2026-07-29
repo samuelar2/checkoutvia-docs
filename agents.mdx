@@ -535,6 +535,31 @@ The MCP server exposes the same surface as tools, so an MCP-capable client — C
 Claude Code, or your own harness — can drive a checkout with no integration code at all. Set
 `CHECKOUTVIA_API_KEY` and point your client at it.
 
+```json
+{
+  "mcpServers": {
+    "checkoutvia": {
+      "command": "npx",
+      "args": ["-y", "checkoutvia-mcp"],
+      "env": { "CHECKOUTVIA_API_KEY": "ck_test_..." }
+    }
+  }
+}
+```
+
+Five tools:
+
+| Tool | What it does |
+| --- | --- |
+| `checkoutvia_list_buyer_profiles` | Call this **first**. Attaching a stored address stops the run pausing to ask for one. |
+| `checkoutvia_create_checkout` | Starts the purchase. Returns immediately — nothing has been bought yet. |
+| `checkoutvia_get_checkout` | Status, a readable timeline, the question it is waiting on, the receipt. Poll every 10–15s. |
+| `checkoutvia_answer_action` | Answers a `variant` or `shipping` question. Refuses the secret ones — see below. |
+| `checkoutvia_cancel_checkout` | Stops a run and tears down its browser. |
+
+At the card step the server leads with the merchant's own order total, because that is the
+last moment the price can be questioned before money moves.
+
 It **refuses card, credentials and OTP values as tool arguments**, by design and for the reason
 above: those are not things a model should be holding. When a run blocks on one of them, the
 server surfaces the question and the human answers it out of band.

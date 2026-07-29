@@ -170,8 +170,9 @@ Send a whole `shipping` object or none at all.
 Two smaller behaviours:
 
 - An empty body is a `400 No fields to update`, not a no-op that quietly succeeds.
-- You cannot set a document back to `null` through `PATCH` — `"name": null` fails validation.
-  Send `"name": {}` to empty it.
+- Send `"name": null` to **clear** a document outright — that is how you remove an address you
+  no longer want us holding, short of deleting the whole profile. `"name": {}` stores an empty
+  object instead, which is a different thing.
 
 One consequence worth designing around: a checkout stores only `buyerProfileId`, never a copy
 of the address. Resolve that id after an update and you get the *current* address, not the one

@@ -200,6 +200,7 @@ action.
     "id": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
     "message": "Enter a single-use / agent card to complete this purchase.",
     "key": "card",
+    "detectedTotal": { "amount": "61.40", "currency": "GBP" },
     "responseSchema": { "type": "object", "additionalProperties": false, "required": ["card_number", "card_expiry", "card_cvc"], "properties": { "card_number": { "type": "string", "title": "Card number", "minLength": 1, "description": "Single-use / agent card number for this purchase." }, "card_expiry": { "type": "string", "title": "Expiration date (MM / YY)", "minLength": 1 }, "card_cvc": { "type": "string", "title": "Security code", "minLength": 1 } } },
     "expiresAt": "2026-07-29T09:24:45.612Z"
   }
@@ -382,6 +383,20 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
 <ResponseField name="url" type="string">
   Ready to drop into an `<iframe src>`. Contains the token.
 </ResponseField>
+<ResponseField name="detectedTotal" type="object">
+  What the merchant's own checkout says this order costs — **shipping and tax included** —
+  read off the live page at the moment the run stopped to ask. `{ "amount": "61.40",
+  "currency": "GBP" }`.
+
+  Present on `card` actions. **Show it to your user before you answer.** After that the money
+  has moved: `receipt.total` only exists once the checkout has succeeded, which is too late to
+  be a confirmation step.
+
+  Best-effort, so treat it as optional. It is omitted entirely when no total could be parsed,
+  and `currency` can be absent when the page shows a bare number — a confident wrong price
+  would be worse than no price, so nothing is guessed.
+</ResponseField>
+
 <ResponseField name="expiresAt" type="string">
   ISO 8601. No refresh — mint a new token when it lapses.
 </ResponseField>

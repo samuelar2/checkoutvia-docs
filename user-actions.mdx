@@ -65,6 +65,20 @@ An action appears on the checkout object you are already polling:
   `{"type":"object","additionalProperties":false,...}` with a `required` array and a
   `properties` map.
 </ResponseField>
+<ResponseField name="detectedTotal" type="object">
+  What the merchant's own checkout says this order costs — **shipping and tax included** —
+  read off the live page at the moment the run stopped to ask. `{ "amount": "61.40",
+  "currency": "GBP" }`.
+
+  Present on `card` actions. **Show it to your user before you answer.** After that the money
+  has moved: `receipt.total` only exists once the checkout has succeeded, which is too late to
+  be a confirmation step.
+
+  Best-effort, so treat it as optional. It is omitted entirely when no total could be parsed,
+  and `currency` can be absent when the page shows a bare number — a confident wrong price
+  would be worse than no price, so nothing is guessed.
+</ResponseField>
+
 <ResponseField name="expiresAt" type="string">
   ISO 8601. Past this instant, answering fails and the checkout fails with
   `user_action_expired`.
