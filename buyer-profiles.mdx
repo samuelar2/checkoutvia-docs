@@ -124,20 +124,98 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
 The list is cursor-paginated, newest first. Pass `nextCursor` back as `?cursor=` for the next
 page; `nextCursor: null` means you have them all. `limit` defaults to 20 and caps at 100.
 
-## No update, no delete
+## Update
 
-There is no `PATCH` and no `DELETE` for buyer profiles. To change an address, create a new
-profile and use its id on subsequent checkouts.
+```bash
+curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "shipping": {
+      "addressLines": ["221B Baker Street"],
+      "locality": "London",
+      "postalCode": "NW1 6XE",
+      "countryCode": "GB"
+    }
+  }'
+```
 
-The reason it works this way: a profile is referenced by every checkout that used it, and
-past checkouts should keep showing the address the order actually went to. Whether that
-justifies having no deletion path at all is a fair question — see
-[Errors and limits](/errors-and-limits#known-gaps).
+The response is the full updated profile — the same shape as create.
+
+### PATCH replaces a document wholesale
+
+This is the one thing to get right. `name`, `contact` and `shipping` are each stored as a
+single JSON document, and `PATCH` is partial **at the top level only**:
+
+- Omit a key and that document is left exactly as it was.
+- Supply a key and its document is **replaced entirely**. Fields you did not mention are gone,
+  not inherited.
+
+<Warning>
+There is no deep merge, deliberately. Patching half an address and inheriting the other half
+from the old one is how you ship a parcel to a street in the wrong city — a new `postalCode`
+silently keeping the old `locality` produces an address that looks complete and is wrong.
+
+Send a whole `shipping` object or none at all.
+</Warning>
+
+```bash
+# Ada moved. This replaces the whole address, and leaves name and contact untouched.
+-d '{"shipping":{"addressLines":["221B Baker Street"],"locality":"London","postalCode":"NW1 6XE","countryCode":"GB"}}'
+
+# WRONG. The old addressLines, locality and countryCode survive; only the postcode changes.
+-d '{"shipping":{"postalCode":"NW1 6XE"}}'
+```
+
+Two smaller behaviours:
+
+- An empty body is a `400 No fields to update`, not a no-op that quietly succeeds.
+- You cannot set a document back to `null` through `PATCH` — `"name": null` fails validation.
+  Send `"name": {}` to empty it.
+
+One consequence worth designing around: a checkout stores only `buyerProfileId`, never a copy
+of the address. Resolve that id after an update and you get the *current* address, not the one
+the parcel actually went to. If shipped-to addresses matter to you — and for anything with a
+refund or dispute process they do — record the address yourself at creation time rather than
+resolving the reference later.
+
+## Delete
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json Response (200)
+{ "deleted": true, "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30" }
+```
+
+A real delete, not a tombstone. **This is the path for honouring a data-deletion request** —
+"remove what you hold about me" has an answer, and it is this endpoint.
+
+What survives and what goes is decided by the schema, not by a cleanup job that might not run:
+
+<CardGroup cols={2}>
+  <Card title="Checkouts survive" icon="receipt">
+    A checkout that referenced the profile keeps existing, with its `buyerProfileId` reference
+    set to null. Purchase history outlives the identity, so your books still balance and the
+    deleted person is no longer in them.
+  </Card>
+  <Card title="Buyer sessions cascade" icon="trash">
+    Stored merchant logins for that profile are deleted with it. That is the point of deleting,
+    not a side effect: leaving a live merchant session behind for a buyer you just erased is
+    the opposite of what was asked for.
+  </Card>
+</CardGroup>
+
+Deleting is not reversible and there is no soft-delete flag to undo. `404 Profile not found`
+covers both "no such id" and "another tenant's" — a second delete of the same profile is a
+`404`, so treat that as success if you are retrying.
 
 <Note>
-Deleting the tenant cascades to its profiles, and deleting a profile a checkout referenced
-would null out that reference rather than orphan the checkout. Neither is reachable through
-the public API today.
+A run currently in flight against a deleted profile does not stop. It already loaded the
+address it needed; the reference simply nulls out. Cancel the checkout too if the point is that
+nothing more should be shipped.
 </Note>
 
 ## Profiles and stored merchant sessions

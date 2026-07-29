@@ -46,6 +46,33 @@ hosts you *can* reach, so you never have to parse the message:
 The two reasons a request is confined — a sandbox-only account, or a `ck_test_` key — are
 distinguished in the message. See [Sandbox](/sandbox).
 
+Three others carry a machine-readable field, all to do with
+[scopes](/authentication#scopes):
+
+```json 403 — out-of-scope request
+{
+  "error": true,
+  "message": "This API key is missing the 'buyer-profiles.read' scope.",
+  "requiredScope": "buyer-profiles.read"
+}
+```
+
+```json 400 — unknown scope at key creation
+{
+  "error": true,
+  "message": "Unknown scope(s): checkouts.admin",
+  "validScopes": ["*", "checkouts.read", "checkouts.write", "..."]
+}
+```
+
+```json 403 — a key trying to mint a broader key
+{
+  "error": true,
+  "message": "A key cannot grant scopes it does not itself hold.",
+  "heldScopes": ["checkouts.write"]
+}
+```
+
 <Note>
 Two endpoints break the JSON pattern: `DELETE /v1/checkouts/{id}` returns `202` with an empty
 body, and the `/embed` routes return plain text (`Invalid or expired embed token`) because
@@ -61,8 +88,8 @@ they are consumed by a browser, not an API client.
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
 | `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist. |
 | `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; sandbox confinement; live-key request from a sandbox-only account; signup closed. |
-| `404` | Not found, or owned by another tenant — the two are not distinguished. |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account; a key trying to mint a broader key; signup closed. |
+| `404` | Not found, or owned by another tenant — the two are not distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
 | `409` | The action you are answering is already `submitted`, `declined` or `expired`. |
 | `429` | A quota was hit. See below. |
 
@@ -72,7 +99,7 @@ they are consumed by a browser, not an API client.
 | --- | --- |
 | `Checkout not found` | `GET`/`DELETE /v1/checkouts/{id}`, `POST .../embed-token`, `POST .../actions/{id}` |
 | `Action not found` | `POST /v1/checkouts/{id}/actions/{actionId}` — no such action **on this checkout** |
-| `Profile not found` | `GET /v1/buyer-profiles/{id}` |
+| `Profile not found` | `GET`/`PATCH`/`DELETE /v1/buyer-profiles/{id}` |
 | `Session not found` | `DELETE /v1/buyer-sessions/{id}` |
 | `Endpoint not found` | `DELETE /v1/webhooks/{id}` |
 | `Key not found or already revoked` | `DELETE /v1/api-keys/{id}` |
@@ -198,9 +225,10 @@ Things a reasonable integrator expects that do not exist yet. Listed so you desi
 them rather than discover them.
 
 <AccordionGroup>
-  <Accordion title="No update or delete for buyer profiles">
-    `POST`, `GET` and list only. Correcting an address means creating a new profile, and
-    there is no way to remove a profile a buyer asked you to delete.
+  <Accordion title="No shipped-to address on a past checkout">
+    A checkout stores `buyerProfileId`, never a copy of the address it used. `PATCH` or
+    `DELETE` the profile and there is no longer any way to recover where a past order actually
+    went. Record it yourself at creation time if refunds or disputes depend on it.
   </Accordion>
 
   <Accordion title="No way to list an action's history">

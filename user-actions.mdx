@@ -10,6 +10,13 @@ texted to you.
 Rather than guessing, the run stops and asks — through one channel, with one shape, for
 every kind of question. That channel is the **user action**.
 
+<Note>
+If the thing answering these is an LLM agent, read
+[which questions the agent may answer itself](/agents#which-questions-may-the-agent-answer)
+first. `variant` and `shipping` are answerable in software; `card`, `credentials` and `otp` are
+not, and the reason is not squeamishness.
+</Note>
+
 ## How an action arrives
 
 An action appears on the checkout object you are already polling:
@@ -43,8 +50,8 @@ An action appears on the checkout object you are already polling:
 ```
 
 <ResponseField name="key" type="string">
-  What is being asked for: `card`, `variant`, `credentials`, `otp`. Branch on this. Omitted
-  on actions raised before this field existed.
+  What is being asked for: `variant`, `shipping`, `card`, `credentials`, `otp`, or a slug the
+  tier-2 agent chose. Branch on this. Omitted on actions raised before this field existed.
 </ResponseField>
 
 <ResponseField name="id" type="string">
@@ -89,8 +96,8 @@ meaningless. Send exactly the listed keys.
 Rendering a free-text field and a card field the same way is not acceptable — you need to
 know which kind of question this is.
 
-`pendingUserAction.key` is that answer: `card`, `variant`, `credentials`, `otp`. It is set
-by the engine raising the action, not inferred from the merchant's markup.
+`pendingUserAction.key` is that answer: `variant`, `shipping`, `card`, `credentials`, `otp`. It
+is set by the engine raising the action, not inferred from the merchant's markup.
 
 The reliable read:
 
@@ -192,6 +199,45 @@ const isCardAction =
     single unambiguous winner skips the prompt entirely.
   </Tab>
 
+  <Tab title="shipping">
+    Raised by both engines when the checkout needs a delivery address and no buyer profile
+    supplied one. Like `card`, the schema is **pinned in code**, so a client renders one form
+    regardless of which tier is driving.
+
+    ```json
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "first_name", "last_name", "address_line1", "city", "postal_code", "country_code"],
+      "properties": {
+        "email": { "type": "string", "title": "Email", "minLength": 1, "description": "Where the merchant sends the order confirmation." },
+        "first_name": { "type": "string", "title": "First name", "minLength": 1 },
+        "last_name": { "type": "string", "title": "Last name", "minLength": 1 },
+        "address_line1": { "type": "string", "title": "Address", "minLength": 1 },
+        "address_line2": { "type": "string", "title": "Apartment, suite, etc. (optional)" },
+        "city": { "type": "string", "title": "City", "minLength": 1 },
+        "administrative_area": { "type": "string", "title": "State / province", "description": "Required for US and Canadian addresses." },
+        "postal_code": { "type": "string", "title": "Postal code", "minLength": 1 },
+        "country_code": { "type": "string", "title": "Country", "minLength": 2, "description": "Two-letter ISO code, e.g. US or GB." }
+      }
+    }
+    ```
+
+    The field names deliberately mirror a [buyer profile](/buyer-profiles) rather than the
+    merchant's markup — the answer is about the buyer, not about this particular form. Your
+    answer is folded into a profile shape internally, so the fill path downstream cannot tell
+    where the address came from.
+
+    Attach a `buyerProfileId` at creation and this action never appears. Answering it does not
+    save the address anywhere: it applies to this run only.
+
+    <Note>
+    If the address fields are still empty after you answer, the run fails with
+    `automation_failed` rather than asking again. That is our selectors failing on this
+    merchant, not you withholding anything, and re-asking would loop.
+    </Note>
+  </Tab>
+
   <Tab title="credentials">
     Tier 2 only. Raised when the site puts a login wall between the agent and checkout and
     no guest path exists.
@@ -218,11 +264,9 @@ const isCardAction =
     a reusable session, so the next checkout at that merchant starts logged in — see
     [Buyer sessions](/buyer-sessions).
 
-    <Warning>
-    Values you submit here are retained in the action's audit record. Only card-shaped field
-    names are redacted; a field literally named `password` is not. See
-    [What happens to submitted values](#what-happens-to-submitted-values).
-    </Warning>
+    Every value on a `credentials` action is redacted in the audit record whatever the field
+    is called — the redaction keys off the action's `key`, not off field names it did not
+    choose. See [What happens to submitted values](#what-happens-to-submitted-values).
   </Tab>
 
   <Tab title="otp">
@@ -337,9 +381,19 @@ This is the part worth reading carefully before you put a card number in a `valu
 
 <Steps>
   <Step title="A redacted copy is written to the action's audit record">
-    Field names matching card-shaped patterns — `card`, `cc-num`, `pan`, `cvc`, `cvv`,
-    `security code`, `expir` — are replaced with `"[redacted]"` before anything is stored.
-    Every other field is stored as sent.
+    Redaction is driven by the action's `key`, not by what the fields happen to be called.
+
+    - `card`, `credentials` and `otp` — **every** submitted value becomes `"[redacted]"`,
+      whatever its field name.
+    - Every other key — values whose field name looks card-shaped (`card`, `cc-num`, `pan`,
+      `cvc`, `cvv`, `security code`, `expir`) or secret-shaped (`password`, `passcode`,
+      `secret`, `token`, `otp`, `one-time`, `verification code`, `auth code`, `pin`) are
+      redacted; the rest are stored as sent.
+
+    Keying off the action is the reliable half. Field names inside a `credentials` action are
+    chosen by a model reading a merchant's login form, so they are not ours to predict —
+    name-matching alone let plaintext passwords through, which is why it is now a backstop
+    rather than the primary defence.
   </Step>
   <Step title="The raw values go to a transient, delete-on-read store">
     A separate table keyed by action id, with a short TTL of its own. This is the only place
@@ -358,10 +412,11 @@ This is the part worth reading carefully before you put a card number in a `valu
 </Steps>
 
 <Warning>
-**Redaction is by field name, and only card-shaped names are covered.** A `credentials`
-action with a field called `password` stores that password in the action's audit record. If
-your merchant accounts matter, use throwaway or scoped credentials, and prefer
-[buyer sessions](/buyer-sessions) so a password is supplied once rather than every run.
+**Redaction protects our stores; it does not make a password reusable-safe.** A merchant
+password still travels over the wire, still exists in a transient row for the length of one
+step, and is still typed into a real login form. Use throwaway or scoped credentials where the
+merchant allows it, and prefer [buyer sessions](/buyer-sessions) so a password is supplied once
+rather than on every run.
 </Warning>
 
 Submitted values are never returned by any API endpoint. `pendingUserAction` disappears once

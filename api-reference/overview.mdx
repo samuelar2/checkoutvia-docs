@@ -45,8 +45,30 @@ surfaces do not:
 </ResponseField>
 
 <ResponseField name="Errors" type="{ error: true, message }">
-  Plus `issues` on validation failures. See [Errors and limits](/errors-and-limits).
+  Plus `issues` on validation failures, `requiredScope` on a scope refusal, `sandboxMerchants`
+  on sandbox confinement. See [Errors and limits](/errors-and-limits).
 </ResponseField>
+
+<ResponseField name="Scopes" type="<resource>.read | <resource>.write | *">
+  Every route requires a scope derived from its path and method. `write` implies `read` on the
+  same resource; a key issued without `scopes` holds `*`. See
+  [Authentication](/authentication#scopes).
+</ResponseField>
+
+## Machine-readable spec
+
+The whole `/v1` surface is described in OpenAPI 3.1. The spec lives at `openapi.json` in the
+root of the [docs repository](https://github.com/samuelar2/checkoutvia-docs), and the
+**Endpoints** group in this tab is generated from it — so that group is the version that cannot
+drift from the schemas, and it is what to feed a code generator or an agent.
+
+The pages below are the hand-written companion: the same endpoints, with the reasoning a spec
+has no room for. Where the two disagree, the spec is right about shapes and these pages are
+right about why.
+
+The live-view embed (`/embed/*`) is not in the spec — it is browser-facing, authenticates with
+a minted JWT rather than an API key, and returns HTML and `text/event-stream`. See
+[Live view](/live-view).
 
 ## Endpoints
 
@@ -64,56 +86,58 @@ surfaces do not:
 
 ### [Checkouts](/api-reference/checkouts)
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/v1/checkouts` |
-| `GET` | `/v1/checkouts` |
-| `GET` | `/v1/checkouts/{id}` |
-| `DELETE` | `/v1/checkouts/{id}` |
-| `POST` | `/v1/checkouts/{id}/embed-token` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `POST` | `/v1/checkouts` | `checkouts.write` |
+| `GET` | `/v1/checkouts` | `checkouts.read` |
+| `GET` | `/v1/checkouts/{id}` | `checkouts.read` |
+| `DELETE` | `/v1/checkouts/{id}` | `checkouts.write` |
+| `POST` | `/v1/checkouts/{id}/embed-token` | `checkouts.write` |
 
 ### [User actions](/api-reference/user-actions)
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/v1/checkouts/{id}/actions/{actionId}` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `POST` | `/v1/checkouts/{id}/actions/{actionId}` | `checkouts.write` |
 
 ### [Buyer profiles](/api-reference/buyer-profiles)
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/v1/buyer-profiles` |
-| `GET` | `/v1/buyer-profiles` |
-| `GET` | `/v1/buyer-profiles/{id}` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `POST` | `/v1/buyer-profiles` | `buyer-profiles.write` |
+| `GET` | `/v1/buyer-profiles` | `buyer-profiles.read` |
+| `GET` | `/v1/buyer-profiles/{id}` | `buyer-profiles.read` |
+| `PATCH` | `/v1/buyer-profiles/{id}` | `buyer-profiles.write` |
+| `DELETE` | `/v1/buyer-profiles/{id}` | `buyer-profiles.write` |
 
 ### [Buyer sessions](/api-reference/buyer-sessions)
 
-| Method | Path |
-| --- | --- |
-| `GET` | `/v1/buyer-sessions` |
-| `DELETE` | `/v1/buyer-sessions/{id}` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `GET` | `/v1/buyer-sessions` | `buyer-sessions.read` |
+| `DELETE` | `/v1/buyer-sessions/{id}` | `buyer-sessions.write` |
 
 ### [Webhooks](/api-reference/webhooks)
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/v1/webhooks` |
-| `GET` | `/v1/webhooks` |
-| `DELETE` | `/v1/webhooks/{id}` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `POST` | `/v1/webhooks` | `webhooks.write` |
+| `GET` | `/v1/webhooks` | `webhooks.read` |
+| `DELETE` | `/v1/webhooks/{id}` | `webhooks.write` |
 
 ### [API keys](/api-reference/api-keys)
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/v1/api-keys` |
-| `GET` | `/v1/api-keys` |
-| `DELETE` | `/v1/api-keys/{id}` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `POST` | `/v1/api-keys` | `api-keys.write` |
+| `GET` | `/v1/api-keys` | `api-keys.read` |
+| `DELETE` | `/v1/api-keys/{id}` | `api-keys.write` |
 
 ### [Usage](/api-reference/usage)
 
-| Method | Path |
-| --- | --- |
-| `GET` | `/v1/usage` |
+| Method | Path | Scope |
+| --- | --- | --- |
+| `GET` | `/v1/usage` | `usage.read` |
 
 ### Live view (embed-token auth)
 
@@ -126,5 +150,6 @@ Documented in [Live view](/live-view).
 
 <Note>
 There is no SDK yet. Everything here is plain HTTP; the [Quickstart](/quickstart) has a
-complete TypeScript client in about a hundred lines of `fetch`.
+complete TypeScript client in about a hundred lines of `fetch`, and
+[Use Checkoutvia from an LLM agent](/agents) has the same thing shaped as model tools.
 </Note>

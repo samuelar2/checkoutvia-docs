@@ -1,0 +1,562 @@
+---
+title: "Use Checkoutvia from an LLM agent"
+description: "Tool definitions for Anthropic and OpenAI, the polling loop an agent has to run, and which of the questions a checkout asks an agent may answer itself."
+---
+
+Checkoutvia is built to be called by an autonomous agent. This page is for the developer
+wiring one up: the loop, the tool definitions, and — the part that actually decides whether
+your integration is safe — which questions the model may answer and which must go to a person.
+
+## The loop
+
+**create → poll → answer actions → receipt.**
+
+<Steps>
+  <Step title="Create">
+    `POST /v1/checkouts` with a URL and a sentence. Returns in milliseconds with a `queued`
+    object and an id. Nothing has happened yet.
+  </Step>
+  <Step title="Poll">
+    `GET /v1/checkouts/{id}` every 3–5 seconds. Reads are not rate limited. The object carries
+    the status, an append-only `progressItems` timeline, and a `pendingUserAction` when the run
+    is blocked.
+  </Step>
+  <Step title="Answer">
+    `POST /v1/checkouts/{id}/actions/{actionId}` with `submit` and the values the action's
+    `responseSchema` describes — or `decline` to end the run. Then go back to polling.
+  </Step>
+  <Step title="Receipt">
+    A `succeeded` checkout carries `receipt.merchantOrderId` and `receipt.total`. `failed` and
+    `cancelled` carry `failure.reason`. Those three statuses are terminal.
+  </Step>
+</Steps>
+
+This is not request/response, and building it as if it were is the single most common way to
+get this wrong. A run takes **two to three minutes** on the Shopify tier and longer on the
+general DOM tier, and it will typically **stop twice** — once for a variant, once for a card —
+each time waiting up to ten minutes for an answer. Budget for a conversation that spans
+minutes and survives your process restarting, not for a tool call that returns a purchase.
+
+<Note>
+If your agent runs inside a request handler with a 30-second timeout, do not run the poll loop
+there. Create the checkout, persist the id, and drive the rest from a job, a cron, or a
+[webhook](/webhooks) that wakes you on each status change.
+</Note>
+
+## Give the agent a narrow key
+
+Scopes exist for exactly this situation. The holder of a key is an autonomous process, and the
+useful question is not "do I trust this tenant" but "what is the worst this agent can do if its
+prompt is turned against it".
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write","buyer-profiles.read"]}'
+```
+
+That key can create, poll, cancel and answer checkouts (`write` implies `read` on the same
+resource), and list buyer profiles so the model can choose one. It cannot read your usage, it
+cannot touch your webhooks, and it cannot mint itself a better key — a key can never grant
+scopes it does not itself hold. See [Authentication](/authentication#scopes).
+
+<Tip>
+Drop `buyer-profiles.read` and hand the agent a `buyerProfileId` in its system prompt instead.
+Attaching a profile to a checkout does not require reading it, so an agent scoped to
+`["checkouts.write"]` alone can still ship to a stored address it can never enumerate.
+</Tip>
+
+## Tool definitions
+
+Four tools cover the whole product. They are written against the real request shapes — cross-check
+against the [API reference](/api-reference/overview) or `openapi.json` if you change them.
+
+<CodeGroup>
+```json Anthropic
+[
+  {
+    "name": "create_checkout",
+    "description": "Start buying a specific product page. Returns immediately with a checkout id and status 'queued' — the purchase has NOT happened. Call get_checkout repeatedly until the status is succeeded, failed or cancelled. A run takes 2-3 minutes and will pause to ask questions.",
+    "input_schema": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+        },
+        "request": {
+          "type": "string",
+          "description": "Plain English instructions for this purchase, e.g. 'buy this in medium, black, cheapest delivery'. Naming an option value here usually avoids a variant question later."
+        },
+        "buyerProfileId": {
+          "type": "string",
+          "description": "Id of a stored buyer profile supplying name, email and delivery address. Without one the run will stop and ask for an address."
+        },
+        "maxCostAmount": {
+          "type": "string",
+          "description": "Spending ceiling for this checkout as a decimal string, e.g. '60.00'. Checked against the order total displayed at the payment step, before any card is requested. If the total exceeds it the run fails instead of buying."
+        },
+        "maxCostCurrency": {
+          "type": "string",
+          "description": "ISO 4217 code for maxCostAmount. Defaults to USD."
+        }
+      }
+    }
+  },
+  {
+    "name": "get_checkout",
+    "description": "Fetch the current state of a checkout: status, what the agent has done so far, and any question it is waiting on. Poll this every few seconds while the status is queued, running or awaiting_user_action.",
+    "input_schema": {
+      "type": "object",
+      "required": ["checkoutId"],
+      "properties": {
+        "checkoutId": { "type": "string", "description": "Id returned by create_checkout." }
+      }
+    }
+  },
+  {
+    "name": "answer_checkout_action",
+    "description": "Answer the pending question on a checkout, or decline it. Only use this for questions you can answer from the user's stated request or from data your application holds — a product variant, a delivery address. NEVER use it to supply a card number, a password, a login, or a verification code: those must come from the human, through your application, not from you. If the question asks for any of those, or you do not know the answer, decline instead.",
+    "input_schema": {
+      "type": "object",
+      "required": ["checkoutId", "actionId", "action"],
+      "properties": {
+        "checkoutId": { "type": "string" },
+        "actionId": {
+          "type": "string",
+          "description": "pendingUserAction.id from get_checkout. Actions get a new id each time; never reuse one."
+        },
+        "action": {
+          "type": "string",
+          "enum": ["submit", "decline"],
+          "description": "'submit' to answer, 'decline' to abandon the purchase. Declining ends the run immediately."
+        },
+        "values": {
+          "type": "object",
+          "description": "Required when action is 'submit'. An object with exactly the keys listed in the action's responseSchema.properties, all values as strings. Where a property has a oneOf list, pick one of the const values.",
+          "additionalProperties": { "type": "string" }
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional free text when declining. Recorded for audit."
+        }
+      }
+    }
+  },
+  {
+    "name": "list_buyer_profiles",
+    "description": "List stored buyer profiles — the saved names, contact details and delivery addresses a checkout can ship to. Use this to pick a buyerProfileId before creating a checkout.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "description": "Page size, 1-100. Defaults to 20.",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    }
+  }
+]
+```
+
+```json OpenAI
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "create_checkout",
+      "description": "Start buying a specific product page. Returns immediately with a checkout id and status 'queued' — the purchase has NOT happened. Call get_checkout repeatedly until the status is succeeded, failed or cancelled. A run takes 2-3 minutes and will pause to ask questions.",
+      "parameters": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+          },
+          "request": {
+            "type": "string",
+            "description": "Plain English instructions for this purchase, e.g. 'buy this in medium, black, cheapest delivery'. Naming an option value here usually avoids a variant question later."
+          },
+          "buyerProfileId": {
+            "type": "string",
+            "description": "Id of a stored buyer profile supplying name, email and delivery address. Without one the run will stop and ask for an address."
+          },
+          "maxCostAmount": {
+            "type": "string",
+            "description": "Spending ceiling for this checkout as a decimal string, e.g. '60.00'. Checked against the order total displayed at the payment step, before any card is requested. If the total exceeds it the run fails instead of buying."
+          },
+          "maxCostCurrency": {
+            "type": "string",
+            "description": "ISO 4217 code for maxCostAmount. Defaults to USD."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_checkout",
+      "description": "Fetch the current state of a checkout: status, what the agent has done so far, and any question it is waiting on. Poll this every few seconds while the status is queued, running or awaiting_user_action.",
+      "parameters": {
+        "type": "object",
+        "required": ["checkoutId"],
+        "properties": {
+          "checkoutId": { "type": "string", "description": "Id returned by create_checkout." }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "answer_checkout_action",
+      "description": "Answer the pending question on a checkout, or decline it. Only use this for questions you can answer from the user's stated request or from data your application holds — a product variant, a delivery address. NEVER use it to supply a card number, a password, a login, or a verification code: those must come from the human, through your application, not from you. If the question asks for any of those, or you do not know the answer, decline instead.",
+      "parameters": {
+        "type": "object",
+        "required": ["checkoutId", "actionId", "action"],
+        "properties": {
+          "checkoutId": { "type": "string" },
+          "actionId": {
+            "type": "string",
+            "description": "pendingUserAction.id from get_checkout. Actions get a new id each time; never reuse one."
+          },
+          "action": {
+            "type": "string",
+            "enum": ["submit", "decline"],
+            "description": "'submit' to answer, 'decline' to abandon the purchase. Declining ends the run immediately."
+          },
+          "values": {
+            "type": "object",
+            "description": "Required when action is 'submit'. An object with exactly the keys listed in the action's responseSchema.properties, all values as strings. Where a property has a oneOf list, pick one of the const values.",
+            "additionalProperties": { "type": "string" }
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional free text when declining. Recorded for audit."
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_buyer_profiles",
+      "description": "List stored buyer profiles — the saved names, contact details and delivery addresses a checkout can ship to. Use this to pick a buyerProfileId before creating a checkout.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Page size, 1-100. Defaults to 20.",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      }
+    }
+  }
+]
+```
+</CodeGroup>
+
+Two deliberate choices in there, both worth keeping if you rewrite these:
+
+- **`maxCost` is flattened into two string parameters.** Nested objects are where models
+  reliably deviate from a schema, and this one is a spending limit. Flatten it and rebuild the
+  `{ amount, currency }` object in your handler.
+- **`create_checkout` does not expose `allowedDomains` or `merchantContext`.** Both widen what
+  the run may do — `allowedDomains` literally widens the navigation guard. They are your
+  decision, from your config, not the model's from its context.
+
+<Warning>
+There is no product search. `create_checkout` needs a URL the model already has, from your own
+catalogue, a search tool you provide, or the user. A model asked to buy "a black hoodie" with
+only these four tools will invent a plausible-looking URL. Say so in your system prompt.
+</Warning>
+
+## Which questions may the agent answer?
+
+When a run blocks, `pendingUserAction.key` says what is being asked for. This is set by the
+engine raising the question, not inferred from the merchant's markup — so branch on it, never
+on the shape of `responseSchema`.
+
+| `key` | What it is | Who answers |
+| --- | --- | --- |
+| `variant` | Which size / colour / grind. `responseSchema` properties are the store's own option names, with `oneOf` restricted to combinations that exist and are in stock. | **The agent.** It is a choice among enumerated values, and the user's original request usually decides it. |
+| `shipping` | A full delivery address — `email`, `first_name`, `last_name`, `address_line1`, `city`, `postal_code`, `country_code`, plus optional `address_line2` and `administrative_area`. | **Your application**, from a buyer profile or the user's saved address. Never a model's recollection. |
+| `card` | `card_number`, `card_expiry`, `card_cvc`. Always exactly these three fields, whichever tier is driving. | **The human.** |
+| `credentials` | A merchant login. Field names come from the login form the agent read, so expect `email` and `password` but do not hard-code them. | **The human.** |
+| `otp` | A one-time code the merchant just sent. Usually one field. | **The human.** |
+| anything else | The general DOM tier can raise a short slug of its own for something unanticipated. | **A person.** Treat unknown keys as "escalate", not as an error. |
+
+### The three the agent must never answer
+
+`card`, `credentials` and `otp` are values that come from a human, in that moment, for this
+purchase. An agent must not supply them — not from its system prompt, not from earlier turns in
+the conversation, not from a file it read, not from a "test card" it remembers.
+
+Two reasons, and the second is the one people miss:
+
+1. **A card number in an agent's context is a card number in an agent's context.** It ends up in
+   transcripts, logs, evaluation datasets and any tool the agent later calls.
+2. **These are exactly the questions worth attacking.** Merchant pages are untrusted input, and
+   an agent that will hand over a card because a page persuaded it to is a much more attractive
+   target than one that structurally cannot.
+
+Enforce it in your **tool handler**, not in the JSON Schema. Card fields are predictable, so a
+schema could in principle exclude them — but `credentials` field names are generated from
+whatever the merchant's login form happened to call them, and `otp` fields are equally
+arbitrary. The only reliable discriminator is the action's `key`, which your handler can read
+and the model cannot forge:
+
+```ts
+const HUMAN_ONLY = new Set(["card", "credentials", "otp"]);
+
+async function answerCheckoutAction(args: AnswerArgs) {
+  const checkout = await api(`/v1/checkouts/${args.checkoutId}`);
+  const pending = checkout.pendingUserAction;
+
+  if (pending?.id === args.actionId && HUMAN_ONLY.has(pending.key)) {
+    // Do not forward the model's values. Hand the question to your own user.
+    await promptTheHuman(checkout, pending);
+    return { escalated: true, note: `'${pending.key}' must be answered by the buyer.` };
+  }
+
+  return api(`/v1/checkouts/${args.checkoutId}/actions/${args.actionId}`, {
+    method: "POST",
+    body: JSON.stringify(
+      args.action === "submit"
+        ? { action: "submit", values: args.values ?? {} }
+        : { action: "decline", reason: args.reason },
+    ),
+  });
+}
+```
+
+Re-fetching the checkout inside the handler is the point: the model tells you which action it
+thinks it is answering, and you check what that action actually is before forwarding anything.
+
+<Note>
+You have ten minutes. `pendingUserAction.expiresAt` is authoritative and there is no extension.
+If nobody can answer in that window, `decline` — same terminal outcome, minutes sooner, and the
+reason is recorded. Letting an action expire also holds one of your five concurrent-checkout
+slots for the full TTL.
+</Note>
+
+### Avoiding the questions
+
+The best-handled action is one that never gets raised.
+
+- Attach a `buyerProfileId` and no `shipping` action appears.
+- Put the option in `request` — `"buy this in medium, black"` — and a single unambiguous match
+  skips the variant prompt. Values are matched as whole words against the store's option values.
+- Store a [buyer session](/buyer-sessions) once and later runs at that merchant start logged in,
+  so `credentials` and `otp` stop recurring for that buyer.
+
+`card` cannot be avoided, and that is deliberate: reaching it is the guarantee that nothing has
+been charged yet. The code path that fills a card and clicks pay is only reachable from a resume
+that carries card values.
+
+## A worked loop
+
+Plain `fetch`, no SDK. This is the tool-handler side — the part you wire behind whichever model
+you are using.
+
+```ts checkoutvia-tools.ts
+const BASE = "https://api.checkoutvia.com";
+const KEY = process.env.CKV_KEY!;
+
+type Json = Record<string, any>;
+
+async function api(path: string, init: RequestInit = {}): Promise<Json> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    // Give the model the message: 409 "Action already submitted" and
+    // 403 "missing the 'checkouts.write' scope" are both actionable in-loop.
+    throw new Error(`${res.status}: ${body.message ?? text}`);
+  }
+  return body;
+}
+
+const HUMAN_ONLY = new Set(["card", "credentials", "otp"]);
+
+/**
+ * Trim a checkout down to what a model needs. The raw object carries the entire
+ * append-only timeline, which grows every few seconds — feeding all of it back on
+ * every poll burns context and buries the one field that matters.
+ */
+function forModel(checkout: Json) {
+  const items = checkout.progressItems ?? [];
+  return {
+    id: checkout.id,
+    status: checkout.status,
+    latestProgress: items.slice(-3).map((i: Json) => i.label),
+    ...(checkout.pendingUserAction
+      ? {
+          pendingUserAction: {
+            id: checkout.pendingUserAction.id,
+            key: checkout.pendingUserAction.key,
+            message: checkout.pendingUserAction.message,
+            responseSchema: checkout.pendingUserAction.responseSchema,
+            expiresAt: checkout.pendingUserAction.expiresAt,
+            answerableByAgent: !HUMAN_ONLY.has(checkout.pendingUserAction.key),
+          },
+        }
+      : {}),
+    ...(checkout.failure ? { failure: checkout.failure } : {}),
+    ...(checkout.receipt ? { receipt: checkout.receipt } : {}),
+  };
+}
+
+export const handlers = {
+  async create_checkout(a: Json) {
+    const checkout = await api("/v1/checkouts", {
+      method: "POST",
+      body: JSON.stringify({
+        target: { url: a.url, ...(a.request ? { request: a.request } : {}) },
+        ...(a.buyerProfileId ? { buyerProfileId: a.buyerProfileId } : {}),
+        // Rebuild the nested Money object the API wants from the flat tool args.
+        ...(a.maxCostAmount
+          ? {
+              constraints: {
+                maxCost: { amount: a.maxCostAmount, currency: a.maxCostCurrency ?? "USD" },
+              },
+            }
+          : {}),
+      }),
+    });
+    return forModel(checkout);
+  },
+
+  async get_checkout(a: Json) {
+    return forModel(await api(`/v1/checkouts/${a.checkoutId}`));
+  },
+
+  async answer_checkout_action(a: Json) {
+    const current = await api(`/v1/checkouts/${a.checkoutId}`);
+    const pending = current.pendingUserAction;
+
+    if (!pending || pending.id !== a.actionId) {
+      // Already answered, expired, or the model guessed an id.
+      return { ok: false, note: "That action is no longer pending.", ...forModel(current) };
+    }
+    if (a.action === "submit" && HUMAN_ONLY.has(pending.key)) {
+      await promptTheHuman(current, pending); // your UI, your push notification, your inbox
+      return {
+        ok: false,
+        escalated: true,
+        note: `'${pending.key}' must be answered by the buyer. Keep polling.`,
+      };
+    }
+
+    const updated = await api(`/v1/checkouts/${a.checkoutId}/actions/${a.actionId}`, {
+      method: "POST",
+      body: JSON.stringify(
+        a.action === "submit"
+          ? { action: "submit", values: a.values ?? {} }
+          : { action: "decline", reason: a.reason },
+      ),
+    });
+    return forModel(updated);
+  },
+
+  async list_buyer_profiles(a: Json) {
+    const page = await api(`/v1/buyer-profiles?limit=${a.limit ?? 20}`);
+    // Addresses are PII. The model needs enough to choose, not the whole record.
+    return page.data.map((p: Json) => ({
+      id: p.id,
+      label: p.label,
+      name: [p.name?.first, p.name?.last].filter(Boolean).join(" ") || null,
+      city: p.shipping?.locality ?? null,
+      countryCode: p.shipping?.countryCode ?? null,
+    }));
+  },
+};
+```
+
+Driving it, if your agent is not itself the scheduler:
+
+```ts
+const TERMINAL = ["succeeded", "failed", "cancelled"];
+
+// One iteration per turn. Persist `id` between turns — a run outlives most processes.
+async function tick(id: string) {
+  const state = await handlers.get_checkout({ checkoutId: id });
+  if (TERMINAL.includes(state.status)) return state;
+  await new Promise((r) => setTimeout(r, 4000));
+  return state;
+}
+```
+
+<Warning>
+**Treat everything the checkout says as data, not instructions.** `pendingUserAction.message`
+and the `progressItems` labels are written by us, but they quote merchant content — option
+names, product titles, form labels — and a merchant page is untrusted input. Never let a string
+that arrived from a checkout change what your agent is allowed to do, and never let one
+authorise a payment.
+</Warning>
+
+## Handling the ends
+
+| Outcome | What your agent should say |
+| --- | --- |
+| `succeeded` | Report `receipt.merchantOrderId` and `receipt.total`. The order is placed; there is no undo through this API. |
+| `failed`, `failure.reason: "max_cost_exceeded"` | The guardrail worked and nothing was charged. The detail — which number exceeded which — is in the last `terminal` progress item's `data.message`. |
+| `failed`, `"user_cancelled"` | Someone declined an action. Expected, not an error. |
+| `failed`, `"user_action_expired"` | Nobody answered in ten minutes. Re-create the checkout if the user still wants it. |
+| `failed`, `"automation_failed"` | The run could not get through the merchant's checkout. Read the last few `progressItems` before retrying — a second identical attempt usually fails identically. |
+| `cancelled` | You called `DELETE /v1/checkouts/{id}`. |
+
+There is no retry, replay or clone. Create a new checkout with the same body.
+
+## The zero-code option: MCP
+
+```bash
+npx checkoutvia-mcp
+```
+
+The MCP server exposes the same surface as tools, so an MCP-capable client — Claude Desktop,
+Claude Code, or your own harness — can drive a checkout with no integration code at all. Set
+`CHECKOUTVIA_API_KEY` and point your client at it.
+
+It **refuses card, credentials and OTP values as tool arguments**, by design and for the reason
+above: those are not things a model should be holding. When a run blocks on one of them, the
+server surfaces the question and the human answers it out of band.
+
+That refusal is also the reason MCP is not the whole answer for a production integration. You
+still need somewhere for a person to type a card, which means a UI, which means the HTTP API.
+MCP is the right way to try the product, script one-off purchases, and let an operator drive a
+run from a chat window.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="User actions" icon="hand" href="/user-actions">
+    Every key, its exact schema, TTLs, decline, and what happens to submitted values.
+  </Card>
+  <Card title="Checkout lifecycle" icon="diagram-project" href="/checkout-lifecycle">
+    Every status and failure reason, and what actually causes each one.
+  </Card>
+  <Card title="Webhooks" icon="bell" href="/webhooks">
+    Get pushed status transitions instead of polling a run that is parked for ten minutes.
+  </Card>
+  <Card title="Sandbox" icon="flask" href="/sandbox">
+    Prove your decline, expiry and `max_cost_exceeded` paths before a real card is involved.
+  </Card>
+</CardGroup>

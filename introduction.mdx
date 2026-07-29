@@ -1,9 +1,10 @@
 ---
 title: "Introduction"
-description: "What Checkoutvia does, what it does not do, and the shape of the integration."
+description: "Checkoutvia is an HTTP API for agents that buy things. What it does, what it refuses to do, and the shape of the integration."
 ---
 
-Checkoutvia buys things on the open web on a user's behalf.
+Checkoutvia buys things on the open web on a user's behalf. The caller we build for is an
+**autonomous agent** — or the developer wiring one up.
 
 You give it a URL and a sentence:
 
@@ -26,6 +27,25 @@ same API and the run picks up where it left off.
 There is no merchant integration. Nothing has to be Stripe-enabled or protocol-compliant on
 the other end. If a person with a browser could buy it, the agent works against the same
 page they would.
+
+## The API is the product
+
+Stated outright, because it changes where you should be reading.
+
+Everything Checkoutvia does happens over HTTP. There is no required SDK, no widget to embed,
+no client library you have to wait for. The **web dashboard exists for billing and for issuing
+API keys** — and, when you want it, for watching a run go past. It is not where the work
+happens, and no capability lives there that the API does not have.
+
+That shape is deliberate. The integrator we design for is a process, not a person clicking
+through a console: it authenticates with a scoped bearer token, drives the whole lifecycle
+over four endpoints, and never needs a browser of its own.
+
+<Card title="Use Checkoutvia from an LLM agent" icon="robot" href="/agents">
+  Copy-paste tool definitions for Anthropic and OpenAI, the polling loop, and — the part that
+  decides whether your integration is safe — which of the questions a checkout asks the model
+  may answer itself.
+</Card>
 
 ## The integration in four calls
 
@@ -106,7 +126,12 @@ It is also not instantaneous. A real browser has to load real pages over a real 
 and food-delivery flows are structurally longer than retail ones. Budget minutes, not
 milliseconds, and build your UI around the `progressItems` stream rather than a spinner.
 
-<Card title="Start here" icon="rocket" href="/quickstart">
-  Sign up, create a checkout, and answer a variant and a card action — end to end, with
-  curl and TypeScript.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Start here" icon="rocket" href="/quickstart">
+    Sign up, create a checkout, and answer a variant and a card action — end to end, with
+    curl and TypeScript.
+  </Card>
+  <Card title="Wiring up an agent" icon="robot" href="/agents">
+    Tool definitions, the loop, and which questions a model may answer for itself.
+  </Card>
+</CardGroup>

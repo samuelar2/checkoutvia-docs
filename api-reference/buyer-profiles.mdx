@@ -1,6 +1,6 @@
 ---
 title: "Buyer profiles"
-description: "Create, get and list reusable identity and shipping details."
+description: "Create, get, list, update and delete reusable identity and shipping details."
 ---
 
 Concepts and field guidance in [Buyer profiles](/buyer-profiles).
@@ -167,10 +167,95 @@ Newest first. `nextCursor: null` means the last page.
 
 ---
 
-## No update, no delete
+## Update
 
-There is no `PATCH` and no `DELETE`. Create a new profile to change an address; the old one
-stays, so past checkouts keep showing the address the order actually went to.
+```http
+PATCH /v1/buyer-profiles/{id}
+```
 
-If you need a deletion path for a buyer's data, get in touch — this is on the list. See
-[Known gaps](/errors-and-limits#known-gaps).
+Success: `200`, returning the full updated profile.
+
+```bash
+curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "shipping": {
+      "addressLines": ["221B Baker Street"],
+      "locality": "London",
+      "postalCode": "NW1 6XE",
+      "countryCode": "GB"
+    }
+  }'
+```
+
+### Body
+
+Same fields as create, all optional — but partial **only at the top level**.
+
+<Warning>
+`name`, `contact` and `shipping` are each one JSON document. Omit a key and that document is
+untouched; **supply a key and its document is replaced wholesale**. There is no deep merge.
+
+`{"shipping":{"postalCode":"NW1 6XE"}}` does not change the postcode on the stored address — it
+throws the address away and stores one that is only a postcode. Send the whole object.
+</Warning>
+
+<ParamField body="label" type="string">
+  Replaces the stored label. Cannot be set back to `null`.
+</ParamField>
+<ParamField body="name" type="object">
+  Replaces the whole `name` document. Send `{}` to empty it.
+</ParamField>
+<ParamField body="contact" type="object">
+  Replaces the whole `contact` document.
+</ParamField>
+<ParamField body="shipping" type="object">
+  Replaces the whole `shipping` document.
+</ParamField>
+
+### Errors
+
+| Status | Message |
+| --- | --- |
+| `400` | `No fields to update` — the body parsed but contained none of the four keys |
+| `400` | `Invalid profile` (with `issues`) — type mismatch, or an explicit `null` for a sub-object |
+| `404` | `Profile not found` |
+
+---
+
+## Delete
+
+```http
+DELETE /v1/buyer-profiles/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{ "deleted": true, "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30" }
+```
+
+A row delete, not a soft delete. This is the endpoint to call when a buyer asks you to remove
+what you hold about them.
+
+The blast radius is fixed by foreign keys, so it is the same every time:
+
+| Related data | What happens | Why |
+| --- | --- | --- |
+| Checkouts that used the profile | Survive, with `buyerProfileId` set to null | Purchase history should outlive the identity |
+| Buyer sessions for the profile | Deleted (cascade) | Keeping a live merchant login for an erased buyer is the opposite of the request |
+
+`404 Profile not found` covers both "no such id" and "another tenant's". A repeat delete is a
+`404` — treat it as success when retrying.
+
+<Note>
+Deleting a profile does not stop a checkout already running against it. The run loaded the
+address it needed before this call; the reference simply nulls out. Cancel the checkout as well
+if nothing more should ship.
+</Note>

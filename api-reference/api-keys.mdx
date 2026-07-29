@@ -1,10 +1,10 @@
 ---
 title: "API keys"
-description: "Create, list and revoke API keys."
+description: "Create, list and revoke API keys, and the scopes they carry."
 ---
 
-Key management is self-serve: any live key can mint another, so rotation needs no dashboard
-and no downtime. Concepts in [Authentication](/authentication).
+Key management is self-serve: any key holding `api-keys.write` can mint another, so rotation
+needs no dashboard and no downtime. Concepts in [Authentication](/authentication#scopes).
 
 ## Create a key
 
@@ -18,7 +18,7 @@ Success: `201`.
 curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   -H "authorization: Bearer $CKV_KEY" \
   -H 'content-type: application/json' \
-  -d '{"mode":"live","label":"prod-worker"}'
+  -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write"]}'
 ```
 
 <ParamField body="mode" type='"test" | "live"' default="test">
@@ -34,14 +34,35 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   Optional, max 200 characters. Shown in the list; never sent anywhere.
 </ParamField>
 
-An empty body is valid and produces a `test` key.
+<ParamField body="scopes" type="string[]">
+  1–32 entries. **Omit for full access** — the key gets `["*"]`, which is what a key has always
+  meant here and what every key issued before scopes existed still carries.
+
+  Valid values:
+
+  ```
+  *
+  checkouts.read        checkouts.write
+  buyer-profiles.read   buyer-profiles.write
+  buyer-sessions.read   buyer-sessions.write
+  webhooks.read         webhooks.write
+  api-keys.read         api-keys.write
+  usage.read            usage.write
+  ```
+
+  `write` implies `read` on the same resource, so `["checkouts.write"]` is enough to create,
+  poll, cancel and answer checkouts. Scopes are fixed at creation — there is no re-scoping.
+</ParamField>
+
+An empty body is valid and produces a full-access `test` key.
 
 ```json Response (201)
 {
   "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
-  "mode": "test",
-  "keyPrefix": "ck_test_3sQd7yQ",
-  "key": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+  "mode": "live",
+  "scopes": ["checkouts.write"],
+  "keyPrefix": "ck_live_9Hf2QzT",
+  "key": "ck_live_9Hf2QzT0mHq9pP2rVwXk1tLb"
 }
 ```
 
@@ -57,10 +78,34 @@ process or database query can recover it.
 
 ### Errors
 
-| Status | Message |
-| --- | --- |
-| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live` |
-| `403` | `This account is sandbox-only. Live keys require activation.` |
+| Status | Message | Extra field |
+| --- | --- | --- |
+| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, or `scopes` was empty / over 32 entries | `issues` |
+| `400` | `Unknown scope(s): …` — a string that is not in the valid set | `validScopes` |
+| `403` | `This account is sandbox-only. Live keys require activation.` | — |
+| `403` | `A key cannot grant scopes it does not itself hold.` | `heldScopes` |
+
+```json 400 — bad scope string
+{
+  "error": true,
+  "message": "Unknown scope(s): checkouts.admin",
+  "validScopes": ["*", "checkouts.read", "checkouts.write", "buyer-profiles.read", "..."]
+}
+```
+
+```json 403 — escalation refused
+{
+  "error": true,
+  "message": "A key cannot grant scopes it does not itself hold.",
+  "heldScopes": ["checkouts.write"]
+}
+```
+
+<Note>
+The no-escalation check is what stops `api-keys.write` being a one-call route to `*`. A key can
+only ever hand out authority it already holds, so the widest key in your account is the widest
+key that can ever exist in it.
+</Note>
 
 ---
 
@@ -82,8 +127,9 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
   "keys": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
-      "label": "prod-worker",
+      "label": "shopping-agent",
       "mode": "live",
+      "scopes": ["checkouts.write"],
       "keyPrefix": "ck_live_9Hf2QzT",
       "lastUsedAt": "2026-07-29T09:14:31.190Z",
       "revokedAt": null,
@@ -93,6 +139,7 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
       "id": "8b7c6d5e-4f30-4a21-9b8c-0d1e2f3a4b5c",
       "label": "ci",
       "mode": "test",
+      "scopes": ["*"],
       "keyPrefix": "ck_test_3sQd7yQ",
       "lastUsedAt": null,
       "revokedAt": "2026-07-27T11:44:09.331Z",
@@ -105,7 +152,9 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
 Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set — filter
 client-side if you only want active ones.
 
-Listing never returns a secret. `keyPrefix` is the most a list can show.
+Listing never returns a secret. `keyPrefix` is the most a list can show. It does return
+`scopes`, which is how you audit what each outstanding key can reach; `["*"]` is a full-access
+key.
 
 <ResponseField name="lastUsedAt" type="string | null">
   Written best-effort on every authenticated request; never blocks it. A good rotation signal,

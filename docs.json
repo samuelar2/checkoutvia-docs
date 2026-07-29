@@ -9,6 +9,15 @@
     "dark": "#134E4A"
   },
   "favicon": "/favicon.svg",
+  "markdown": {
+    "instructions": [
+      "Checkoutvia's primary integrator is an autonomous agent or the developer wiring one up. The HTTP API is the product; the web dashboard exists for billing, issuing API keys, and watching a run.",
+      "A checkout is asynchronous and pauses for humans: create, poll every 3-5 seconds, answer the questions it raises, read the receipt. A run takes 2-3 minutes and can park for up to 10 minutes on one question. Never present it as a synchronous request/response call.",
+      "Branch on pendingUserAction.key. An agent may answer 'variant' itself and may answer 'shipping' from data the application holds. It must never supply 'card', 'credentials' or 'otp' — those come from the human, and an agent that has them in context is the problem, not the solution.",
+      "Base URL is https://api.checkoutvia.com and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job.",
+      "Every example in these docs is a shape the API actually produces. Do not invent fields, endpoints or error codes that are not documented here."
+    ]
+  },
   "navigation": {
     "tabs": [
       {
@@ -19,6 +28,7 @@
             "pages": [
               "introduction",
               "quickstart",
+              "agents",
               "authentication"
             ]
           },
@@ -69,6 +79,13 @@
               "api-reference/api-keys",
               "api-reference/usage"
             ]
+          },
+          {
+            "group": "Endpoints",
+            "openapi": {
+              "source": "openapi.json",
+              "directory": "api-spec"
+            }
           }
         ]
       }

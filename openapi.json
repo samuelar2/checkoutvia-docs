@@ -1,0 +1,2104 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Checkoutvia API",
+    "version": "1.0.0",
+    "summary": "Agentic checkout. Give it a product URL and a plain-English request; it drives a real browser to a completed purchase and asks a human only when it must.",
+    "description": "The HTTP API is the product. Everything an integration needs — creating checkouts, answering the questions a run stops on, storing buyers, issuing scoped keys — is here.\n\nA checkout is asynchronous and pauses for humans. `POST /v1/checkouts` returns in milliseconds with a `queued` object; the run itself takes minutes and may park on a `pendingUserAction` for up to ten. Poll `GET /v1/checkouts/{id}` (unmetered) or register a webhook endpoint.\n\nNot covered by this spec: the live-view embed (`GET /embed/{checkoutId}` and `GET /embed/{checkoutId}/stream`). Those are consumed by a browser, authenticate with a short-lived JWT minted at `POST /v1/checkouts/{id}/embed-token` rather than with an API key, and return HTML and `text/event-stream`.",
+    "contact": {
+      "name": "Checkoutvia",
+      "url": "https://docs.checkoutvia.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.checkoutvia.com",
+      "description": "Production"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Signup",
+      "description": "Self-serve account creation. The only unauthenticated write on the API."
+    },
+    {
+      "name": "Checkouts",
+      "description": "Create a run, poll it, cancel it, and answer what it asks."
+    },
+    {
+      "name": "Buyer profiles",
+      "description": "Reusable identity and shipping details, referenced by id when creating a checkout."
+    },
+    {
+      "name": "Buyer sessions",
+      "description": "Stored merchant logins captured by a `credentials` action. Read-only metadata and revocation."
+    },
+    {
+      "name": "Webhooks",
+      "description": "Endpoints that receive `checkout.status_changed` with an HMAC-SHA256 signature."
+    },
+    {
+      "name": "API keys",
+      "description": "Self-serve key issuance and revocation. Keys carry scopes; a key can never mint one broader than itself."
+    },
+    {
+      "name": "Usage",
+      "description": "Completed checkouts by day, and gross merchandise volume by currency."
+    },
+    {
+      "name": "Health",
+      "description": "Liveness."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Liveness check",
+        "description": "Unauthenticated. Returns immediately; does not touch the database.",
+        "operationId": "health",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "const": true },
+                    "service": { "type": "string", "const": "checkoutvia" }
+                  }
+                },
+                "example": { "ok": true, "service": "checkoutvia" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/signup": {
+      "post": {
+        "tags": ["Signup"],
+        "summary": "Create a sandbox account",
+        "description": "Creates a sandbox-only tenant and returns one `ck_test_` key, shown exactly once.\n\nA sandbox tenant runs the entire product — real browser, real storefront, real card entry, a genuinely placed order — but only against merchants Checkoutvia controls. It cannot reach a real merchant and cannot mint a `live` key until the account is activated.\n\nUnauthenticated, and rate limited on its own terms: 3 signups per hour per source IP, 200 per 24 hours platform-wide.",
+        "operationId": "signup",
+        "security": [],
+        "requestBody": {
+          "required": false,
+          "description": "Optional. An empty body is valid.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Your account name. Defaults to `email`, then to `\"sandbox tenant\"`."
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 200,
+                    "description": "Contact address. Not verified, not emailed."
+                  }
+                },
+                "additionalProperties": false
+              },
+              "example": { "name": "Acme Agents", "email": "you@example.com" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SignupResult" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "403": {
+            "description": "Self-serve signup is closed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": true, "message": "Self-serve signup is closed" }
+              }
+            }
+          },
+          "429": {
+            "description": "Signup rate limit hit — per-IP or platform-wide.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": {
+                  "error": true,
+                  "message": "Too many signups from this address. Try again later."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/checkouts": {
+      "post": {
+        "tags": ["Checkouts"],
+        "summary": "Create a checkout",
+        "description": "Returns immediately with a `queued` checkout. The run happens asynchronously in a durable orchestrator, so a client crash or a network blip never orphans a half-finished purchase.\n\nRequires the `checkouts.write` scope.",
+        "operationId": "createCheckout",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CheckoutCreate" },
+              "example": {
+                "target": {
+                  "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                  "request": "buy this in medium, cheapest delivery"
+                },
+                "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+                "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+                "metadata": { "orderRef": "acme-4412" }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Checkout" },
+                "example": {
+                  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                  "status": "queued",
+                  "target": {
+                    "kind": "direct_url",
+                    "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                    "request": "buy this in medium, cheapest delivery"
+                  },
+                  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+                  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+                  "metadata": { "orderRef": "acme-4412" },
+                  "progressItems": [
+                    {
+                      "kind": "intent_started",
+                      "label": "Started checkout",
+                      "data": {},
+                      "at": "2026-07-29T09:14:31.203Z",
+                      "sequence": 1
+                    }
+                  ],
+                  "createdAt": "2026-07-29T09:14:31.190Z",
+                  "updatedAt": "2026-07-29T09:14:31.190Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, or a `buyerProfileId` that is not yours.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValidationError" },
+                "examples": {
+                  "invalidBody": {
+                    "summary": "Zod issues attached",
+                    "value": {
+                      "error": true,
+                      "message": "Invalid request",
+                      "issues": [
+                        {
+                          "code": "invalid_string",
+                          "validation": "url",
+                          "path": ["target", "url"],
+                          "message": "Invalid url"
+                        }
+                      ]
+                    }
+                  },
+                  "unknownProfile": {
+                    "summary": "Buyer profile not found on this tenant",
+                    "value": { "error": true, "message": "buyerProfileId not found" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Sandbox confinement, a suspended tenant, or a missing scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/SandboxError" },
+                    { "$ref": "#/components/schemas/ScopeError" },
+                    { "$ref": "#/components/schemas/Error" }
+                  ]
+                },
+                "examples": {
+                  "sandbox": {
+                    "summary": "Test key pointed at a real merchant",
+                    "value": {
+                      "error": true,
+                      "message": "Cannot check out at example-store.com: This request used a test key. Use a live key to check out at real merchants. Sandbox merchants: your-sandbox-store.myshopify.com.",
+                      "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
+                    }
+                  },
+                  "scope": {
+                    "summary": "Key lacks checkouts.write",
+                    "value": {
+                      "error": true,
+                      "message": "This API key is missing the 'checkouts.write' scope.",
+                      "requiredScope": "checkouts.write"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A per-tenant quota was hit. Both limits are enforced here.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "concurrency": {
+                    "summary": "Active checkout limit (default 5)",
+                    "value": {
+                      "error": true,
+                      "message": "Active checkout limit reached (5). Wait for runs to finish or cancel them."
+                    }
+                  },
+                  "daily": {
+                    "summary": "Daily volume limit (default 200 per rolling 24h)",
+                    "value": {
+                      "error": true,
+                      "message": "Daily checkout limit reached (200 per 24h)."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["Checkouts"],
+        "summary": "List checkouts",
+        "description": "Cursor-paginated summaries, newest first. Deliberately a summary rather than the full object: the full shape carries the whole event timeline, which is exactly what a list view must not fetch.\n\nRequires the `checkouts.read` scope.",
+        "operationId": "listCheckouts",
+        "parameters": [
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Cursor" },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter to one status. An unrecognised value is a `400`, not an empty page.",
+            "schema": { "$ref": "#/components/schemas/CheckoutStatus" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "nextCursor"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/CheckoutSummary" }
+                    },
+                    "nextCursor": {
+                      "type": ["string", "null"],
+                      "format": "date-time",
+                      "description": "Pass back as `?cursor=`. `null` means this was the last page."
+                    }
+                  }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                      "status": "succeeded",
+                      "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                      "request": "buy this in medium, cheapest delivery",
+                      "receipt": { "total": { "amount": "42.10", "currency": "USD" }, "merchantOrderId": "1042" },
+                      "createdAt": "2026-07-29T09:14:31.190Z",
+                      "updatedAt": "2026-07-29T09:26:29.702Z"
+                    },
+                    {
+                      "id": "5c7d9e01-2b34-4a56-8f90-1a2b3c4d5e6f",
+                      "status": "awaiting_user_action",
+                      "url": "https://your-sandbox-store.myshopify.com/products/mug",
+                      "request": null,
+                      "pendingUserActionId": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+                      "createdAt": "2026-07-29T09:31:02.418Z",
+                      "updatedAt": "2026-07-29T09:33:11.006Z"
+                    }
+                  ],
+                  "nextCursor": "2026-07-29T09:31:02.418Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `limit`, `cursor` or `status`.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "limit": {
+                    "value": { "error": true, "message": "'limit' must be an integer between 1 and 100" }
+                  },
+                  "cursor": {
+                    "value": {
+                      "error": true,
+                      "message": "'cursor' must be an ISO 8601 timestamp from a previous nextCursor"
+                    }
+                  },
+                  "status": { "value": { "error": true, "message": "Unknown status 'done'" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/checkouts/{id}": {
+      "parameters": [{ "$ref": "#/components/parameters/CheckoutId" }],
+      "get": {
+        "tags": ["Checkouts"],
+        "summary": "Get a checkout",
+        "description": "The whole current state in one object: status, the append-only `progressItems` timeline, the `pendingUserAction` if the run is blocked, and the `receipt` once it has succeeded.\n\nThis is the endpoint you poll. Reads are not rate limited; a 3–5 second interval is right for a process that takes minutes.\n\nRequires the `checkouts.read` scope.",
+        "operationId": "getCheckout",
+        "responses": {
+          "200": {
+            "description": "The checkout.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Checkout" },
+                "examples": {
+                  "awaitingVariant": {
+                    "summary": "Parked on a variant question",
+                    "value": {
+                      "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                      "status": "awaiting_user_action",
+                      "target": {
+                        "kind": "direct_url",
+                        "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                        "request": "buy this, cheapest delivery"
+                      },
+                      "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+                      "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+                      "metadata": {},
+                      "browser": {
+                        "embedTokenUrl": "/v1/checkouts/1f2e3d4c-5b6a-4790-8123-abcdef012345/embed-token",
+                        "permissions": ["read"]
+                      },
+                      "progressItems": [
+                        {
+                          "kind": "intent_started",
+                          "label": "Started checkout",
+                          "data": {},
+                          "at": "2026-07-29T09:14:31.203Z",
+                          "sequence": 1
+                        },
+                        {
+                          "kind": "user_action",
+                          "label": "This product comes in multiple options — pick one to continue.",
+                          "data": { "key": "variant" },
+                          "at": "2026-07-29T09:14:45.630Z",
+                          "sequence": 4
+                        }
+                      ],
+                      "pendingUserAction": {
+                        "id": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+                        "key": "variant",
+                        "message": "This product comes in multiple options — pick one to continue.",
+                        "responseSchema": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["Size"],
+                          "properties": {
+                            "Size": {
+                              "type": "string",
+                              "title": "Size",
+                              "oneOf": [
+                                { "const": "M", "title": "M" },
+                                { "const": "L", "title": "L" }
+                              ]
+                            }
+                          }
+                        },
+                        "expiresAt": "2026-07-29T09:24:45.612Z"
+                      },
+                      "createdAt": "2026-07-29T09:14:31.190Z",
+                      "updatedAt": "2026-07-29T09:14:45.622Z"
+                    }
+                  },
+                  "succeeded": {
+                    "summary": "Done, with a receipt",
+                    "value": {
+                      "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                      "status": "succeeded",
+                      "target": {
+                        "kind": "direct_url",
+                        "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                        "request": "buy this, cheapest delivery"
+                      },
+                      "constraints": {},
+                      "metadata": {},
+                      "progressItems": [
+                        {
+                          "kind": "terminal",
+                          "label": "Checkout succeeded",
+                          "data": {},
+                          "at": "2026-07-29T09:26:29.688Z",
+                          "sequence": 17
+                        }
+                      ],
+                      "receipt": {
+                        "total": { "amount": "42.10", "currency": "USD" },
+                        "merchantOrderId": "1042",
+                        "evidence": {
+                          "url": "https://your-sandbox-store.myshopify.com/checkouts/c/abc123/thank_you"
+                        }
+                      },
+                      "createdAt": "2026-07-29T09:14:31.190Z",
+                      "updatedAt": "2026-07-29T09:26:29.702Z"
+                    }
+                  },
+                  "failed": {
+                    "summary": "Stopped by the maxCost guardrail",
+                    "value": {
+                      "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                      "status": "failed",
+                      "target": {
+                        "kind": "direct_url",
+                        "url": "https://your-sandbox-store.myshopify.com/products/widget"
+                      },
+                      "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+                      "metadata": {},
+                      "progressItems": [
+                        {
+                          "kind": "terminal",
+                          "label": "Checkout failed",
+                          "data": {
+                            "reason": "max_cost_exceeded",
+                            "message": "Order total 61.40 USD exceeds maxCost 60.00 USD"
+                          },
+                          "at": "2026-07-29T09:25:10.114Z",
+                          "sequence": 12
+                        }
+                      ],
+                      "failure": { "reason": "max_cost_exceeded" },
+                      "createdAt": "2026-07-29T09:14:31.190Z",
+                      "updatedAt": "2026-07-29T09:25:10.220Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/CheckoutNotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Checkouts"],
+        "summary": "Cancel a checkout",
+        "description": "Accepted, not applied. The cancellation is enqueued; the run stops, the browser is torn down, and the checkout lands on `cancelled` shortly after. Poll to observe it.\n\nCancelling an already-terminal checkout is a no-op that still returns `202`.\n\nRequires the `checkouts.write` scope.",
+        "operationId": "cancelCheckout",
+        "responses": {
+          "202": {
+            "description": "Cancellation accepted. Empty body."
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/CheckoutNotFound" }
+        }
+      }
+    },
+    "/v1/checkouts/{id}/embed-token": {
+      "parameters": [{ "$ref": "#/components/parameters/CheckoutId" }],
+      "post": {
+        "tags": ["Checkouts"],
+        "summary": "Mint a live-view token",
+        "description": "Returns a short-lived JWT pinned to this one checkout, and the URL to open with it. The checkout id alone gets you nothing — the token is what gates the stream.\n\nThe view is read-only by construction: no input path exists from the embed to the browser.\n\nRequires the `checkouts.write` scope (it is a `POST`).",
+        "operationId": "createEmbedToken",
+        "responses": {
+          "200": {
+            "description": "Token minted. Expires 10 minutes from now.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EmbedToken" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/CheckoutNotFound" }
+        }
+      }
+    },
+    "/v1/checkouts/{id}/actions/{actionId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/CheckoutId" },
+        {
+          "name": "actionId",
+          "in": "path",
+          "required": true,
+          "description": "The `pendingUserAction.id` from the checkout. A new action gets a new id every time — never cache one.",
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "post": {
+        "tags": ["Checkouts"],
+        "summary": "Answer or decline a user action",
+        "description": "Submit the values described by the action's `responseSchema`, or decline to abandon the purchase. Declining is a first-class outcome, not an error path: the run stops immediately and the checkout fails with `user_cancelled`.\n\nThe response is the full checkout, re-serialized, with `pendingUserAction` gone.\n\nValues for `card`, `credentials` and `otp` actions are fully redacted in the audit record and the raw copy goes to a transient, delete-on-read store consumed by the one step that types it.\n\nRequires the `checkouts.write` scope.",
+        "operationId": "resolveUserAction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/ActionSubmit" },
+                  { "$ref": "#/components/schemas/ActionDecline" }
+                ],
+                "discriminator": { "propertyName": "action" }
+              },
+              "examples": {
+                "variant": {
+                  "summary": "Answer a variant question",
+                  "value": { "action": "submit", "values": { "Size": "M", "Color": "Black" } }
+                },
+                "card": {
+                  "summary": "Answer a card question",
+                  "value": {
+                    "action": "submit",
+                    "values": {
+                      "card_number": "4111111111111111",
+                      "card_expiry": "12 / 30",
+                      "card_cvc": "123"
+                    }
+                  }
+                },
+                "decline": {
+                  "summary": "Refuse and end the run",
+                  "value": { "action": "decline", "reason": "no operator available" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved. The full checkout, without `pendingUserAction`.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Checkout" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "No such checkout, or no such action on this checkout.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "checkout": { "value": { "error": true, "message": "Checkout not found" } },
+                  "action": { "value": { "error": true, "message": "Action not found" } }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The action is no longer pending. This is also your idempotency signal — if your own retry gets `Action already submitted`, the first attempt landed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "submitted": { "value": { "error": true, "message": "Action already submitted" } },
+                  "declined": { "value": { "error": true, "message": "Action already declined" } },
+                  "expired": { "value": { "error": true, "message": "Action already expired" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/buyer-profiles": {
+      "post": {
+        "tags": ["Buyer profiles"],
+        "summary": "Create a buyer profile",
+        "description": "Every field is optional — `{}` is a valid profile — but the agent can only fill what you gave it. Values are stored and typed exactly as sent: no normalisation, no address validation, no correction.\n\nOne profile per end user. A profile is the identity that stored merchant sessions hang off, so reusing one across unrelated buyers would share their merchant logins.\n\nRequires the `buyer-profiles.write` scope.",
+        "operationId": "createBuyerProfile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BuyerProfileInput" },
+              "example": {
+                "label": "ada-home",
+                "name": { "first": "Ada", "last": "Lovelace" },
+                "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+                "shipping": {
+                  "addressLines": ["1 Analytical Way"],
+                  "locality": "Louisville",
+                  "administrativeAreaCode": "KY",
+                  "postalCode": "40202",
+                  "countryCode": "US"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created. Omitted sub-objects come back as `null`, not `{}`.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BuyerProfile" }
+              }
+            }
+          },
+          "400": {
+            "description": "Type mismatch.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValidationError" },
+                "example": { "error": true, "message": "Invalid profile", "issues": [] }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "get": {
+        "tags": ["Buyer profiles"],
+        "summary": "List buyer profiles",
+        "description": "Cursor-paginated, newest first.\n\nRequires the `buyer-profiles.read` scope.",
+        "operationId": "listBuyerProfiles",
+        "parameters": [
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Cursor" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of profiles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data", "nextCursor"],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/BuyerProfile" }
+                    },
+                    "nextCursor": { "type": ["string", "null"], "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `limit` or `cursor`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/buyer-profiles/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "get": {
+        "tags": ["Buyer profiles"],
+        "summary": "Get a buyer profile",
+        "description": "Requires the `buyer-profiles.read` scope.",
+        "operationId": "getBuyerProfile",
+        "responses": {
+          "200": {
+            "description": "The profile.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BuyerProfile" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/ProfileNotFound" }
+        }
+      },
+      "patch": {
+        "tags": ["Buyer profiles"],
+        "summary": "Update a buyer profile",
+        "description": "Partial at the top level, wholesale underneath. `name`, `contact` and `shipping` are each stored as one JSON document: omit a key and that document is untouched; supply one and it **replaces** the old document entirely.\n\nThat is deliberate. Merging half an address into an old one is how you ship a parcel to a street in the wrong city — so send a whole `shipping` object or none at all.\n\nAn empty body is a `400`, not a no-op. There is no way to set a document back to `null` through this endpoint; send `{}` to empty it.\n\nRequires the `buyer-profiles.write` scope.",
+        "operationId": "updateBuyerProfile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BuyerProfileInput" },
+              "examples": {
+                "moveHouse": {
+                  "summary": "Replace the whole shipping document",
+                  "value": {
+                    "shipping": {
+                      "addressLines": ["221B Baker Street"],
+                      "locality": "London",
+                      "postalCode": "NW1 6XE",
+                      "countryCode": "GB"
+                    }
+                  }
+                },
+                "relabel": {
+                  "summary": "Change only the label; name/contact/shipping untouched",
+                  "value": { "label": "ada-work" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated. The full profile.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BuyerProfile" }
+              }
+            }
+          },
+          "400": {
+            "description": "Type mismatch, or nothing to update.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValidationError" },
+                "examples": {
+                  "empty": { "value": { "error": true, "message": "No fields to update" } },
+                  "invalid": { "value": { "error": true, "message": "Invalid profile", "issues": [] } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/ProfileNotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Buyer profiles"],
+        "summary": "Delete a buyer profile",
+        "description": "A real delete, not a tombstone. This is the path for honouring \"remove what you hold about me\".\n\nWhat goes and what stays is decided by the schema, not by a cleanup job:\n\n- Checkouts that referenced this profile **survive** with their `buyerProfileId` set to null, so purchase history outlives the identity.\n- Buyer sessions for this profile — the stored merchant logins — **cascade away**. That is the point of deleting, not a side effect.\n\nRequires the `buyer-profiles.write` scope.",
+        "operationId": "deleteBuyerProfile",
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted", "id"],
+                  "properties": {
+                    "deleted": { "type": "boolean", "const": true },
+                    "id": { "type": "string", "format": "uuid" }
+                  }
+                },
+                "example": {
+                  "deleted": true,
+                  "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/ProfileNotFound" }
+        }
+      }
+    },
+    "/v1/buyer-sessions": {
+      "get": {
+        "tags": ["Buyer sessions"],
+        "summary": "List stored merchant sessions",
+        "description": "Metadata only. The cookie blob itself is encrypted at rest and is never returned by any endpoint.\n\nSessions are created only by checkout runs — a `credentials` login, or a refresh on a later success — so there is no `POST` here.\n\nWhen the session vault is disabled on the deployment, this returns an empty list with `vaultEnabled: false` rather than an error.\n\nRequires the `buyer-sessions.read` scope.",
+        "operationId": "listBuyerSessions",
+        "parameters": [
+          {
+            "name": "buyerProfileId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow to one buyer.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions, newest activity first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["sessions", "vaultEnabled"],
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/BuyerSession" }
+                    },
+                    "vaultEnabled": {
+                      "type": "boolean",
+                      "description": "`false` means the deployment has no session vault configured; `sessions` is then always empty."
+                    }
+                  }
+                },
+                "example": {
+                  "sessions": [
+                    {
+                      "id": "e91d4a55-0b62-4c33-9f18-7a2c5d80b134",
+                      "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+                      "merchantDomain": "example-store.com",
+                      "createdAt": "2026-07-21T14:02:11.771Z",
+                      "updatedAt": "2026-07-29T09:26:29.310Z",
+                      "lastUsedAt": "2026-07-29T09:26:29.310Z"
+                    }
+                  ],
+                  "vaultEnabled": true
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/buyer-sessions/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "delete": {
+        "tags": ["Buyer sessions"],
+        "summary": "Revoke a stored merchant session",
+        "description": "A row delete. The next checkout at that merchant for that buyer starts logged out and will raise a `credentials` action again if the site demands one.\n\nRequires the `buyer-sessions.write` scope.",
+        "operationId": "deleteBuyerSession",
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": { "deleted": { "type": "boolean", "const": true } }
+                },
+                "example": { "deleted": true }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "No such session, or not yours.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": true, "message": "Session not found" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks": {
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Register a webhook endpoint",
+        "description": "The signing secret is returned exactly once, here. Store it — nothing can recover it.\n\nRequires the `webhooks.write` scope.",
+        "operationId": "createWebhookEndpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Must be `https://`. `http://localhost` and `http://127.0.0.1` are allowed for development."
+                  },
+                  "label": { "type": "string", "maxLength": 200 }
+                }
+              },
+              "example": { "url": "https://example.com/hooks/checkoutvia", "label": "prod" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "url", "label", "secret"],
+                  "properties": {
+                    "id": { "type": "string", "format": "uuid" },
+                    "url": { "type": "string", "format": "uri" },
+                    "label": { "type": ["string", "null"] },
+                    "secret": {
+                      "type": "string",
+                      "description": "`whsec_…`. Shown once. Used to verify the `t=…,v1=…` signature header."
+                    }
+                  }
+                },
+                "example": {
+                  "id": "3d4c5b6a-7890-4123-9abc-def012345678",
+                  "url": "https://example.com/hooks/checkoutvia",
+                  "label": "prod",
+                  "secret": "whsec_1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuV"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or non-https URL.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValidationError" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "get": {
+        "tags": ["Webhooks"],
+        "summary": "List webhook endpoints",
+        "description": "Active endpoints only — revoked ones are excluded. Not paginated. Never returns a secret.\n\nRequires the `webhooks.read` scope.",
+        "operationId": "listWebhookEndpoints",
+        "responses": {
+          "200": {
+            "description": "Endpoints, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["endpoints"],
+                  "properties": {
+                    "endpoints": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/WebhookEndpoint" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/webhooks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "delete": {
+        "tags": ["Webhooks"],
+        "summary": "Revoke a webhook endpoint",
+        "description": "Revocation is a timestamp, not a row delete. Deliveries stop immediately and the endpoint drops out of the list.\n\nRequires the `webhooks.write` scope.",
+        "operationId": "revokeWebhookEndpoint",
+        "responses": {
+          "200": {
+            "description": "Revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["revoked"],
+                  "properties": { "revoked": { "type": "boolean", "const": true } }
+                },
+                "example": { "revoked": true }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "Unknown, another tenant's, or already revoked.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": true, "message": "Endpoint not found" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/api-keys": {
+      "post": {
+        "tags": ["API keys"],
+        "summary": "Create an API key",
+        "description": "The plaintext key is returned exactly once, here. Only `sha256(key)` is stored — no endpoint, support process or database query can recover it.\n\n**Scopes.** Omit `scopes` and the key gets `[\"*\"]`, full access, which is what a key has always meant here. Supply an array to narrow it. A key can never mint a key with scopes it does not itself hold, so `api-keys.write` is not a back door to `*`.\n\n**Mode.** A sandbox-only account cannot create a `live` key. Mode is fixed at creation; there is no promotion path.\n\nAn empty body is valid and produces a full-access `test` key.\n\nRequires the `api-keys.write` scope.",
+        "operationId": "createApiKey",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["test", "live"],
+                    "default": "test",
+                    "description": "`test` keys are confined to sandbox merchants no matter how the account is configured."
+                  },
+                  "label": { "type": "string", "maxLength": 200 },
+                  "scopes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "items": { "$ref": "#/components/schemas/Scope" },
+                    "description": "Omit for full access (`[\"*\"]`)."
+                  }
+                }
+              },
+              "examples": {
+                "fullAccess": {
+                  "summary": "Full access (scopes omitted)",
+                  "value": { "mode": "live", "label": "prod-worker" }
+                },
+                "narrow": {
+                  "summary": "An agent that may only run checkouts",
+                  "value": {
+                    "mode": "live",
+                    "label": "shopping-agent",
+                    "scopes": ["checkouts.write"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created. `key` appears here and nowhere else, ever.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiKeyCreated" },
+                "example": {
+                  "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+                  "mode": "live",
+                  "scopes": ["checkouts.write"],
+                  "keyPrefix": "ck_live_9Hf2QzT",
+                  "key": "ck_live_9Hf2QzT0mHq9pP2rVwXk1tLb"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `mode`, or a scope string that is not in the valid set.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UnknownScopeError" },
+                "example": {
+                  "error": true,
+                  "message": "Unknown scope(s): checkouts.admin",
+                  "validScopes": [
+                    "*",
+                    "checkouts.read",
+                    "checkouts.write",
+                    "buyer-profiles.read",
+                    "buyer-profiles.write",
+                    "buyer-sessions.read",
+                    "buyer-sessions.write",
+                    "webhooks.read",
+                    "webhooks.write",
+                    "api-keys.read",
+                    "api-keys.write",
+                    "usage.read",
+                    "usage.write"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "Sandbox-only account asking for a live key, or an attempt to escalate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/EscalationError" },
+                    { "$ref": "#/components/schemas/ScopeError" },
+                    { "$ref": "#/components/schemas/Error" }
+                  ]
+                },
+                "examples": {
+                  "sandboxOnly": {
+                    "value": {
+                      "error": true,
+                      "message": "This account is sandbox-only. Live keys require activation."
+                    }
+                  },
+                  "escalation": {
+                    "summary": "A narrow key trying to mint a broader one",
+                    "value": {
+                      "error": true,
+                      "message": "A key cannot grant scopes it does not itself hold.",
+                      "heldScopes": ["checkouts.write"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["API keys"],
+        "summary": "List API keys",
+        "description": "Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set — filter client-side if you only want active ones.\n\nListing never returns a secret. `keyPrefix` is the most a list can show.\n\nRequires the `api-keys.read` scope.",
+        "operationId": "listApiKeys",
+        "responses": {
+          "200": {
+            "description": "Every key on the tenant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["keys"],
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ApiKeySummary" }
+                    }
+                  }
+                },
+                "example": {
+                  "keys": [
+                    {
+                      "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+                      "label": "shopping-agent",
+                      "mode": "live",
+                      "scopes": ["checkouts.write"],
+                      "keyPrefix": "ck_live_9Hf2QzT",
+                      "lastUsedAt": "2026-07-29T09:14:31.190Z",
+                      "revokedAt": null,
+                      "createdAt": "2026-07-29T09:02:10.771Z"
+                    },
+                    {
+                      "id": "8b7c6d5e-4f30-4a21-9b8c-0d1e2f3a4b5c",
+                      "label": "ci",
+                      "mode": "test",
+                      "scopes": ["*"],
+                      "keyPrefix": "ck_test_3sQd7yQ",
+                      "lastUsedAt": null,
+                      "revokedAt": "2026-07-27T11:44:09.331Z",
+                      "createdAt": "2026-07-20T08:15:02.640Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/v1/api-keys/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "delete": {
+        "tags": ["API keys"],
+        "summary": "Revoke an API key",
+        "description": "Takes effect immediately. Revocation is a timestamp, not a row delete — knowing which key was live when matters more than a tidy table if one is ever abused.\n\nNothing stops a key revoking itself. Revoke the old key only after the new one's traffic has taken over.\n\nRequires the `api-keys.write` scope.",
+        "operationId": "revokeApiKey",
+        "responses": {
+          "200": {
+            "description": "Revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["revoked"],
+                  "properties": { "revoked": { "type": "boolean", "const": true } }
+                },
+                "example": { "revoked": true }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "Covers all three cases: unknown id, another tenant's key, already revoked.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": true, "message": "Key not found or already revoked" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "tags": ["Usage"],
+        "summary": "Billable usage",
+        "description": "Completed checkouts only. Attempts are never metered — charging for attempts would mean earning more when the agent fails, which is backwards for a product whose entire problem is reliability.\n\nThe default window is the current calendar month (UTC), which is the unit tenants are billed in.\n\nRequires the `usage.read` scope.",
+        "operationId": "getUsage",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive start. Any `Date`-parseable string. Defaults to the first instant of the current UTC month.",
+            "schema": { "type": "string", "format": "date-time" }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "Exclusive end. Defaults to now.",
+            "schema": { "type": "string", "format": "date-time" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The summary for the window.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UsageSummary" },
+                "example": {
+                  "from": "2026-07-01T00:00:00.000Z",
+                  "to": "2026-07-29T09:14:31.190Z",
+                  "completedCheckouts": 37,
+                  "byDay": [
+                    { "day": "2026-07-27", "count": 12 },
+                    { "day": "2026-07-28", "count": 25 }
+                  ],
+                  "merchandiseVolume": [
+                    { "currency": "USD", "amount": "1482.55" },
+                    { "currency": "GBP", "amount": "96.00" }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable date, or `from` after `to`.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "unparseable": { "value": { "error": true, "message": "Invalid from/to date" } },
+                  "inverted": { "value": { "error": true, "message": "'from' must be before 'to'" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer ck_test_…` or `ck_live_…`. There is no other auth scheme — no query-string keys, no request signing, no OAuth."
+      }
+    },
+    "parameters": {
+      "CheckoutId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "The checkout id returned at creation.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Page size. Must be an integer from 1 to 100; anything else is a `400`.",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "The previous page's `nextCursor` — an ISO 8601 timestamp. Returns rows created strictly before it.",
+        "schema": { "type": "string", "format": "date-time" }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing, malformed, invalid or revoked bearer token. There is no distinction between \"never existed\" and \"revoked\" — that difference is only useful to someone probing.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" },
+            "examples": {
+              "missing": { "value": { "error": true, "message": "Missing bearer token" } },
+              "invalid": { "value": { "error": true, "message": "Invalid or revoked API key" } }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The key is missing the scope this route requires, or the tenant is suspended.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "anyOf": [
+                { "$ref": "#/components/schemas/ScopeError" },
+                { "$ref": "#/components/schemas/Error" }
+              ]
+            },
+            "examples": {
+              "scope": {
+                "value": {
+                  "error": true,
+                  "message": "This API key is missing the 'buyer-profiles.read' scope.",
+                  "requiredScope": "buyer-profiles.read"
+                }
+              },
+              "suspended": { "value": { "error": true, "message": "Tenant suspended" } }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "The body did not parse. `issues` carries the raw Zod issues, which are precise enough to point at the offending field.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ValidationError" }
+          }
+        }
+      },
+      "CheckoutNotFound": {
+        "description": "No such checkout, or it belongs to another tenant — the two are not distinguished.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" },
+            "example": { "error": true, "message": "Checkout not found" }
+          }
+        }
+      },
+      "ProfileNotFound": {
+        "description": "No such profile, or it belongs to another tenant.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" },
+            "example": { "error": true, "message": "Profile not found" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "title": "Error",
+        "description": "Every error is this object. There are no error codes: match on the HTTP status, treat `message` as text for a human.",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "title": "ValidationError",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" },
+          "issues": {
+            "type": "array",
+            "description": "Raw Zod issues. `path` is the machine-readable part. Additional fields appear depending on `code` (`validation`, `expected`, `received`, …) — do not treat the list below as exhaustive.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "code": { "type": "string" },
+                "message": { "type": "string" },
+                "path": {
+                  "type": "array",
+                  "items": { "type": ["string", "integer"] }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ScopeError": {
+        "type": "object",
+        "title": "ScopeError",
+        "description": "An out-of-scope request. `requiredScope` saves you parsing the message.",
+        "required": ["error", "message", "requiredScope"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" },
+          "requiredScope": { "$ref": "#/components/schemas/Scope" }
+        }
+      },
+      "EscalationError": {
+        "type": "object",
+        "title": "EscalationError",
+        "description": "Returned when a key tries to mint a key with scopes it does not hold.",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" },
+          "heldScopes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Scope" },
+            "description": "What the authenticating key actually holds."
+          }
+        }
+      },
+      "UnknownScopeError": {
+        "type": "object",
+        "title": "UnknownScopeError",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" },
+          "validScopes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The complete valid set, so you never have to guess."
+          }
+        }
+      },
+      "SandboxError": {
+        "type": "object",
+        "title": "SandboxError",
+        "description": "Sandbox confinement. Raised when the account is sandbox-only, or when the request arrived on a `ck_test_` key — the two triggers are independent.",
+        "required": ["error", "message"],
+        "properties": {
+          "error": { "type": "boolean", "const": true },
+          "message": { "type": "string" },
+          "sandboxMerchants": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The hosts this key *can* reach."
+          }
+        }
+      },
+      "Scope": {
+        "type": "string",
+        "title": "Scope",
+        "description": "`<resource>.read` or `<resource>.write`, or the wildcard `*`. `write` implies `read` on the same resource. Resources are exactly the route groups under `/v1`.",
+        "enum": [
+          "*",
+          "checkouts.read",
+          "checkouts.write",
+          "buyer-profiles.read",
+          "buyer-profiles.write",
+          "buyer-sessions.read",
+          "buyer-sessions.write",
+          "webhooks.read",
+          "webhooks.write",
+          "api-keys.read",
+          "api-keys.write",
+          "usage.read",
+          "usage.write"
+        ]
+      },
+      "Money": {
+        "type": "object",
+        "title": "Money",
+        "required": ["amount"],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "description": "A decimal string — `\"42.10\"`, never `42.1`.",
+            "examples": ["42.10"]
+          },
+          "currency": {
+            "type": "string",
+            "default": "USD",
+            "description": "ISO 4217.",
+            "examples": ["USD"]
+          }
+        }
+      },
+      "CheckoutStatus": {
+        "type": "string",
+        "title": "CheckoutStatus",
+        "description": "`succeeded`, `failed` and `cancelled` are terminal; nothing leaves them.",
+        "enum": [
+          "queued",
+          "running",
+          "awaiting_user_action",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "FailureReason": {
+        "type": "string",
+        "title": "FailureReason",
+        "description": "A closed set of four. The human-readable detail lives in the final `terminal` progress item's `data.message`, not here.",
+        "enum": [
+          "max_cost_exceeded",
+          "user_cancelled",
+          "user_action_expired",
+          "automation_failed"
+        ]
+      },
+      "CheckoutTarget": {
+        "type": "object",
+        "title": "CheckoutTarget",
+        "required": ["url"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["direct_url"],
+            "default": "direct_url",
+            "description": "Only one kind exists. There is no product search — you bring the URL."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The product or cart page to start from."
+          },
+          "request": {
+            "type": "string",
+            "description": "Plain English, for the agent. `\"buy this in medium, cheapest delivery\"`. A request that unambiguously names an option value skips the variant question entirely."
+          },
+          "merchantContext": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "Anything the agent should know about this merchant that the page will not tell it."
+          },
+          "allowedDomains": {
+            "type": "array",
+            "maxItems": 10,
+            "items": { "type": "string", "pattern": "^[a-z0-9.-]+$" },
+            "description": "Extra hostnames the run may navigate to beyond the target's own domain — e.g. a marketplace's separate auth domain. Hostnames only: no scheme, no path.\n\nThis set is fixed before the run starts and cannot grow at runtime, which is what stops untrusted page text steering a session holding buyer PII somewhere else."
+          },
+          "countryCode": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2}$",
+            "description": "ISO 3166-1 alpha-2 for the merchant. Selects the residential proxy exit so the merchant sees a local visitor. Inferred from the URL's ccTLD when omitted."
+          }
+        }
+      },
+      "CheckoutConstraints": {
+        "type": "object",
+        "title": "CheckoutConstraints",
+        "properties": {
+          "maxCost": {
+            "allOf": [{ "$ref": "#/components/schemas/Money" }],
+            "description": "Spending ceiling for this checkout, checked before a card is ever requested. Omitting it means no cost enforcement at all.\n\nA strong guardrail, not a hard ceiling: the order-total check depends on reading a total off the merchant's page, and if none can be parsed there is nothing to compare. The real ceiling should be the card."
+          }
+        }
+      },
+      "ProgressItem": {
+        "type": "object",
+        "title": "ProgressItem",
+        "description": "One entry on the append-only timeline.",
+        "required": ["kind", "label", "data", "at", "sequence"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`intent_started`, `step`, `user_action`, `terminal`, and others as the engines grow. Treat unknown kinds as informational.",
+            "examples": ["step"]
+          },
+          "label": {
+            "type": "string",
+            "description": "Written for a person. Render as-is."
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Structured detail for this entry. `user_action` items carry `key`; the final `terminal` item on a failure carries `reason` and `message`."
+          },
+          "at": { "type": "string", "format": "date-time" },
+          "sequence": {
+            "type": "integer",
+            "description": "Per-checkout, monotonic from 1. Track the highest you have seen to stream only what is new."
+          }
+        }
+      },
+      "PendingUserAction": {
+        "type": "object",
+        "title": "PendingUserAction",
+        "description": "Present only while the run is blocked. At most one per checkout at a time.",
+        "required": ["id", "message", "responseSchema", "expiresAt"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Goes in the submit URL. A new action gets a new id every time — never cache one."
+          },
+          "key": {
+            "type": "string",
+            "description": "What is being asked for. Branch on this, not on the shape of `responseSchema`.\n\nThe known set: `variant` (which size/colour — answerable by an agent), `shipping` (a delivery address — answerable if your app holds one), `card`, `credentials`, `otp` (all three come from the human, never from an agent's context). Tier 2 can raise a short slug of its own for something unanticipated; treat unknown keys as \"route this to a person\".\n\nAbsent on actions raised before this field existed.",
+            "examples": ["variant"]
+          },
+          "message": {
+            "type": "string",
+            "description": "Written for a person, in the context of this specific page. Render it as-is."
+          },
+          "responseSchema": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A real JSON Schema for the object you must send back as `values`. Always `{\"type\":\"object\",\"additionalProperties\":false,…}` with a `required` array and a `properties` map; every property is `type: \"string\"`."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Authoritative. Default TTL is 10 minutes. Past this instant, answering fails and the checkout fails with `user_action_expired`."
+          }
+        }
+      },
+      "Receipt": {
+        "type": "object",
+        "title": "Receipt",
+        "description": "Present only on a `succeeded` checkout.",
+        "properties": {
+          "total": { "$ref": "#/components/schemas/Money" },
+          "merchantOrderId": {
+            "type": ["string", "null"],
+            "description": "The merchant's own format. Do not parse it."
+          },
+          "evidence": {
+            "type": ["object", "null"],
+            "additionalProperties": true,
+            "description": "What the agent saw at confirmation — typically `{ \"url\": \"…/thank_you\" }`."
+          }
+        }
+      },
+      "Checkout": {
+        "type": "object",
+        "title": "Checkout",
+        "description": "The whole state of one run. This is what you poll.",
+        "required": [
+          "id",
+          "status",
+          "target",
+          "constraints",
+          "metadata",
+          "progressItems",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/CheckoutStatus" },
+          "target": { "$ref": "#/components/schemas/CheckoutTarget" },
+          "constraints": { "$ref": "#/components/schemas/CheckoutConstraints" },
+          "buyerProfileId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Absent when no profile was attached, and absent after the referenced profile was deleted."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Yours. Stored and echoed back untouched; never sent to a merchant, and not searchable."
+          },
+          "browser": {
+            "type": "object",
+            "description": "Present once a browser session exists. Not a URL you can watch at — a pointer to the endpoint that mints one.",
+            "properties": {
+              "embedTokenUrl": {
+                "type": "string",
+                "description": "`POST` here to mint a live-view token.",
+                "examples": ["/v1/checkouts/1f2e3d4c-5b6a-4790-8123-abcdef012345/embed-token"]
+              },
+              "permissions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "examples": [["read"]]
+              }
+            }
+          },
+          "progressItems": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProgressItem" },
+            "description": "Append-only, ordered by `sequence`. Build your UI around this rather than a spinner."
+          },
+          "pendingUserAction": { "$ref": "#/components/schemas/PendingUserAction" },
+          "failure": {
+            "type": "object",
+            "required": ["reason"],
+            "properties": {
+              "reason": { "$ref": "#/components/schemas/FailureReason" }
+            }
+          },
+          "receipt": { "$ref": "#/components/schemas/Receipt" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CheckoutSummary": {
+        "type": "object",
+        "title": "CheckoutSummary",
+        "description": "The list-endpoint shape. No timeline — fetch the full object when you need one.",
+        "required": ["id", "status", "url", "request", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/CheckoutStatus" },
+          "url": { "type": ["string", "null"] },
+          "request": { "type": ["string", "null"] },
+          "failure": {
+            "type": "object",
+            "required": ["reason"],
+            "properties": { "reason": { "$ref": "#/components/schemas/FailureReason" } }
+          },
+          "receipt": {
+            "type": "object",
+            "description": "Present once a receipt exists. Total and order id only — no `evidence` on the summary.",
+            "properties": {
+              "total": { "$ref": "#/components/schemas/Money" },
+              "merchantOrderId": { "type": ["string", "null"] }
+            }
+          },
+          "pendingUserActionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present when this checkout is blocked. Fetch the checkout to see what it is asking for."
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CheckoutCreate": {
+        "type": "object",
+        "title": "CheckoutCreate",
+        "required": ["target"],
+        "additionalProperties": false,
+        "properties": {
+          "target": { "$ref": "#/components/schemas/CheckoutTarget" },
+          "buyerProfileId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Must belong to your tenant, or the request is a `400`. Without one the agent has no address, and on most merchants that is where the run stops — or it raises a `shipping` action."
+          },
+          "constraints": {
+            "allOf": [{ "$ref": "#/components/schemas/CheckoutConstraints" }],
+            "default": {}
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {},
+            "description": "Anything you want echoed back on every poll."
+          }
+        }
+      },
+      "ActionSubmit": {
+        "type": "object",
+        "title": "ActionSubmit",
+        "required": ["action", "values"],
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string", "const": "submit" },
+          "values": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Exactly the keys named in the action's `responseSchema.properties`. Send strings — the engines read them as strings. Required even if empty."
+          }
+        }
+      },
+      "ActionDecline": {
+        "type": "object",
+        "title": "ActionDecline",
+        "required": ["action"],
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string", "const": "decline" },
+          "reason": {
+            "type": "string",
+            "description": "Free text, stored on the action for your own audit."
+          }
+        }
+      },
+      "BuyerProfileInput": {
+        "type": "object",
+        "title": "BuyerProfileInput",
+        "description": "Used for both create and update. On `PATCH`, each supplied sub-object replaces the stored one wholesale.",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Yours, for bookkeeping. Never sent to a merchant."
+          },
+          "name": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "first": { "type": "string" },
+              "last": { "type": "string" }
+            },
+            "description": "Also used as the cardholder name at the payment step, which is why the card action never asks for one."
+          },
+          "contact": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "email": {
+                "type": "string",
+                "description": "Where the merchant's order confirmation goes. Most checkouts refuse to proceed without it."
+              },
+              "phone": {
+                "type": "string",
+                "description": "Required by a fair number of merchants, particularly delivery."
+              }
+            }
+          },
+          "shipping": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "addressLines": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Only the **first** line is filled on the Shopify tier. Put an apartment number on line one if it matters."
+              },
+              "locality": { "type": "string", "description": "City / town." },
+              "administrativeAreaCode": {
+                "type": "string",
+                "description": "State / province. Send the short code (`KY`, `ON`). Effectively required for US and CA addresses — Shopify offers no shipping method without it, and with no shipping method the order can never be placed."
+              },
+              "postalCode": { "type": "string" },
+              "countryCode": {
+                "type": "string",
+                "description": "ISO 3166-1 alpha-2. Filled before the state, since changing country repopulates the province list."
+              }
+            }
+          }
+        }
+      },
+      "BuyerProfile": {
+        "type": "object",
+        "title": "BuyerProfile",
+        "required": ["id", "label", "name", "contact", "shipping", "createdAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "label": { "type": ["string", "null"] },
+          "name": {
+            "type": ["object", "null"],
+            "additionalProperties": true,
+            "description": "`null` when never supplied — not `{}`."
+          },
+          "contact": { "type": ["object", "null"], "additionalProperties": true },
+          "shipping": { "type": ["object", "null"], "additionalProperties": true },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "BuyerSession": {
+        "type": "object",
+        "title": "BuyerSession",
+        "description": "Metadata about a stored merchant login. The cookies themselves are encrypted at rest and never returned.",
+        "required": ["id", "buyerProfileId", "merchantDomain", "createdAt", "updatedAt", "lastUsedAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "buyerProfileId": { "type": "string", "format": "uuid" },
+          "merchantDomain": { "type": "string", "examples": ["example-store.com"] },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "lastUsedAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "WebhookEndpoint": {
+        "type": "object",
+        "title": "WebhookEndpoint",
+        "required": ["id", "url", "label", "lastDeliveryAt", "lastDeliveryStatus", "createdAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "url": { "type": "string", "format": "uri" },
+          "label": { "type": ["string", "null"] },
+          "lastDeliveryAt": { "type": ["string", "null"], "format": "date-time" },
+          "lastDeliveryStatus": {
+            "type": ["integer", "null"],
+            "description": "The HTTP status your endpoint last answered with."
+          },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ApiKeySummary": {
+        "type": "object",
+        "title": "ApiKeySummary",
+        "required": ["id", "label", "mode", "scopes", "keyPrefix", "lastUsedAt", "revokedAt", "createdAt"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "label": { "type": ["string", "null"] },
+          "mode": { "type": "string", "enum": ["test", "live"] },
+          "scopes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Scope" },
+            "description": "`[\"*\"]` for a full-access key, including every key issued before scopes existed."
+          },
+          "keyPrefix": {
+            "type": ["string", "null"],
+            "description": "The first 16 characters. Safe to store and display — it identifies which key without being one."
+          },
+          "lastUsedAt": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Written best-effort on every authenticated request; never blocks it. A good rotation signal, not an audit log."
+          },
+          "revokedAt": { "type": ["string", "null"], "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ApiKeyCreated": {
+        "type": "object",
+        "title": "ApiKeyCreated",
+        "required": ["id", "mode", "scopes", "keyPrefix", "key"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "mode": { "type": "string", "enum": ["test", "live"] },
+          "scopes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Scope" }
+          },
+          "keyPrefix": { "type": "string", "examples": ["ck_live_9Hf2QzT"] },
+          "key": {
+            "type": "string",
+            "description": "The plaintext key. Returned here and nowhere else, ever."
+          }
+        }
+      },
+      "SignupResult": {
+        "type": "object",
+        "title": "SignupResult",
+        "required": ["tenantId", "name", "sandboxOnly", "sandboxMerchants", "apiKey"],
+        "properties": {
+          "tenantId": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "sandboxOnly": { "type": "boolean" },
+          "sandboxMerchants": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The only hosts this account can check out at until it is activated.",
+            "examples": [["your-sandbox-store.myshopify.com"]]
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "Shown once. Only a SHA-256 hash is stored — nothing can recover it.",
+            "examples": ["ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"]
+          }
+        }
+      },
+      "EmbedToken": {
+        "type": "object",
+        "title": "EmbedToken",
+        "required": ["token", "url", "expiresAt"],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "A JWT pinned to this one checkout."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The viewer page, token already in the query string. Put it in an iframe."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "10 minutes from minting. Mint another when it lapses."
+          }
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "title": "UsageSummary",
+        "required": ["from", "to", "completedCheckouts", "byDay", "merchandiseVolume"],
+        "properties": {
+          "from": { "type": "string", "format": "date-time" },
+          "to": { "type": "string", "format": "date-time" },
+          "completedCheckouts": {
+            "type": "integer",
+            "description": "The billable number."
+          },
+          "byDay": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["day", "count"],
+              "properties": {
+                "day": { "type": "string", "examples": ["2026-07-28"] },
+                "count": { "type": "integer" }
+              }
+            },
+            "description": "Days with no completions are omitted, not zero-filled."
+          },
+          "merchandiseVolume": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Money" },
+            "description": "Gross merchandise volume by currency. Reporting only — billing is per completed checkout, not a percentage."
+          }
+        }
+      }
+    }
+  }
+}

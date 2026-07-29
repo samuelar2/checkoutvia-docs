@@ -19,7 +19,8 @@ The mental model transfers wholesale, because it was copied on purpose:
 | An **intent** — a URL plus a request, driven asynchronously | Our `checkout`. |
 | An append-only **progressItems** timeline | Same name, same role: an ordered list of what the agent did. |
 | **Schema-driven user actions** as the universal "ask the human" channel | Same idea, same JSON-Schema-in-the-payload approach. |
-| Reusable **buyer profiles** for identity and shipping | Same. |
+| Reusable **buyer profiles** for identity and shipping | Same, and now the same CRUD: create, get, list, `PATCH`, `DELETE`. |
+| **Scoped API keys** | Same idea — a key that can do less than the account it belongs to. Our scope strings are named differently; see below. |
 | A **receipt** on success | Same. |
 | Poll one object for the whole state | Same. |
 
@@ -57,6 +58,29 @@ Stated plainly, so you find these at build time rather than in production.
     hash, and shown once. See [Authentication](/authentication).
   </Accordion>
 
+  <Accordion title="Scope strings are named differently">
+    Both products scope keys; the strings are not interchangeable. Theirs are namespaced under
+    the product (`agent-checkouts.buyer-profiles.*`); ours are `<resource>.read` /
+    `<resource>.write` over the six route groups under `/v1`, plus `*`:
+
+    ```
+    checkouts.read        checkouts.write
+    buyer-profiles.read   buyer-profiles.write
+    buyer-sessions.read   buyer-sessions.write
+    webhooks.read         webhooks.write
+    api-keys.read         api-keys.write
+    usage.read            usage.write
+    *
+    ```
+
+    Two behaviours to check against whatever you are porting from: `write` implies `read` on
+    the same resource, and **a key issued with no `scopes` at all holds `*`** — omission means
+    full access here, not zero access. Narrowing is opt-in.
+
+    A key also cannot mint a key with scopes it does not hold, so you cannot bootstrap a
+    wildcard key from a narrow one. See [Scopes](/authentication#scopes).
+  </Accordion>
+
   <Accordion title="Endpoint paths and naming">
     Everything lives under `/v1`, and the noun is `checkouts`:
 
@@ -68,6 +92,19 @@ Stated plainly, so you find these at build time rather than in production.
     - `POST /v1/checkouts/{id}/embed-token`
 
     Rename `intent` to `checkout` throughout and most of your call sites resolve themselves.
+  </Accordion>
+
+  <Accordion title="Buyer-profile PATCH replaces documents wholesale">
+    We now match their buyer-profile CRUD — `PATCH` and `DELETE` both exist. The semantics are
+    worth checking before you port an update path.
+
+    `name`, `contact` and `shipping` are each stored as one JSON document. `PATCH` is partial at
+    the top level only: omit a key and the document is untouched, supply one and it is
+    **replaced entirely**. There is no deep merge, so `{"shipping":{"postalCode":"…"}}` does not
+    change one field of an address — it throws the address away.
+
+    `DELETE` is a real row delete: referencing checkouts survive with a null reference, stored
+    merchant sessions for that buyer cascade away. See [Buyer profiles](/buyer-profiles#delete).
   </Accordion>
 
   <Accordion title="Action messages are contextual, not generic">
@@ -166,7 +203,13 @@ Two smaller ones worth knowing about:
     Paths, variable names, and any stored ids. Ours are UUIDs.
   </Step>
   <Step title="Fix your action-type branch">
-    Branch on `pendingUserAction.key` — `card`, `variant`, `credentials`, `otp`.
+    Branch on `pendingUserAction.key` — `variant`, `shipping`, `card`, `credentials`, `otp`,
+    and a fallback for anything the tier-2 agent invents.
+  </Step>
+  <Step title="Re-scope your keys">
+    Translate your scope strings (ours are listed above), or omit `scopes` entirely for the
+    all-or-nothing behaviour you had before. Do the translation deliberately — omitting is
+    full access, not none.
   </Step>
   <Step title="Fix your poll condition">
     Branch on `pendingUserAction` presence, not `status === "awaiting_user_action"`.
