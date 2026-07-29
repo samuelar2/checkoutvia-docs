@@ -209,17 +209,6 @@ them rather than discover them.
     `user_action`, with `data.key` — but not what was submitted.
   </Accordion>
 
-  <Accordion title="The action key is not on pendingUserAction">
-    You have to read it from the newest `user_action` progress item. See
-    [Identifying an action](/user-actions#identifying-an-action).
-  </Accordion>
-
-  <Accordion title="No transition back to running after an action is answered">
-    The status stays `awaiting_user_action` until the next action or a terminal state. Branch
-    on the presence of `pendingUserAction`, not on the status. See
-    [the wart](/checkout-lifecycle#a-wart-worth-knowing).
-  </Accordion>
-
   <Accordion title="Webhooks have no event id and no ordering guarantee">
     Dedupe on `(checkoutId, status)` or, better, on the state you fetch. See
     [Webhooks](/webhooks#caveats-you-must-design-around).

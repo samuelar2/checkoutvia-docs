@@ -203,13 +203,10 @@ something from you, `pendingUserAction` appears:
 }
 ```
 
-<Warning>
-**Poll on `pendingUserAction`, not on `status` alone.** Once you answer an action, the
-status stays `awaiting_user_action` while the run continues — it only changes again when
-the next action is raised or the checkout reaches `succeeded` / `failed` / `cancelled`.
-The reliable "the agent needs me" test is `pendingUserAction` being present. See
-[Checkout lifecycle](/checkout-lifecycle#a-wart-worth-knowing).
-</Warning>
+<Note>
+**Render `pendingUserAction`, not `status`.** The status tells you the run is waiting; the
+action tells you what to put on screen. Answering it returns the checkout to `running`.
+</Note>
 
 <Note>
 `browser.embedTokenUrl` marks that a browser exists. `POST` to it to mint a short-lived

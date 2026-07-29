@@ -115,9 +115,9 @@ One event type exists today.
 | `failed` | Yes. |
 | `cancelled` | Yes. |
 
-A checkout that asks two questions produces **two** `awaiting_user_action` events with
-nothing in between, because there is no transition back to `running` after you answer an
-action. See [the wart](/checkout-lifecycle#a-wart-worth-knowing).
+A checkout that asks two questions produces `awaiting_user_action` → `running` →
+`awaiting_user_action`, because answering an action returns the run to `running`. Expect
+repeated visits to both.
 
 Delivery is best-effort by design: a webhook must never fail or slow down a checkout
 transition. Fan-out is enqueued and never awaited on the checkout's critical path. If your

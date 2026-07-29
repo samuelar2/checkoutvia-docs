@@ -86,19 +86,6 @@ Stated plainly, so you find these at build time rather than in production.
     submitted object is irrelevant.
   </Accordion>
 
-  <Accordion title="The action key is not on the action object">
-    Ours is exposed on the timeline instead: the newest `user_action` progress item's
-    `data.key`. If your existing code branches on a key field on the action itself, that is
-    the one place you will need a shim. See
-    [Identifying an action](/user-actions#identifying-an-action).
-  </Accordion>
-
-  <Accordion title="No transition back to running after an action resolves">
-    Answering an action resumes the run, but the status stays `awaiting_user_action` until
-    the next action or a terminal state. Branch on `pendingUserAction` being present, not on
-    the status string. See [the wart](/checkout-lifecycle#a-wart-worth-knowing).
-  </Accordion>
-
   <Accordion title="The live view requires a minted token">
     The checkout id alone gets you nothing. You mint a short-lived, single-checkout JWT via
     `POST /v1/checkouts/{id}/embed-token` and use the returned `url`.

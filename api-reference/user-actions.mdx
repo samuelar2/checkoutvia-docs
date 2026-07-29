@@ -83,9 +83,8 @@ A discriminated union on `action`. Nothing else validates.
 `200` with the **full checkout object** — the same shape as `GET /v1/checkouts/{id}`, taken
 after the update. `pendingUserAction` is gone.
 
-Note what the status will say: it is still `awaiting_user_action` on a `submit`, because
-there is no transition back to `running`. That is expected. See
-[the wart](/checkout-lifecycle#a-wart-worth-knowing).
+The status returns to `running` on a `submit` — the run has resumed. On a `decline` the
+checkout goes terminal with `failure.reason: "user_cancelled"`.
 
 ```json
 {

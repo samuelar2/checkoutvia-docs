@@ -45,16 +45,14 @@ stateDiagram-v2
 late orchestrator replay that lands on a terminal row exits immediately and reclaims the
 browser.
 
-### A wart worth knowing
+### Answering an action returns the checkout to `running`
 
-There is **no transition back to `running`** after you answer an action.
+Submitting a `pendingUserAction` resumes the run and the status goes back to `running`, so
+`awaiting_user_action` always means a human really is being waited on. A checkout can make
+this round trip several times — variant, then card, then done.
 
-Submitting a `pendingUserAction` resumes the run, but the status stays
-`awaiting_user_action` until the next status-changing event: another action is raised (which
-re-enters `awaiting_user_action`) or the checkout goes terminal. During that window the
-object reads `status: "awaiting_user_action"` with **no** `pendingUserAction` field.
-
-So the correct client tests are:
+Even so, prefer testing for the action itself rather than the status string: `status` is a
+summary, `pendingUserAction` is the thing you actually need to render.
 
 ```ts
 const needsMe   = Boolean(checkout.pendingUserAction);
