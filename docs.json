@@ -1,0 +1,84 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Checkoutvia",
+  "description": "Agentic checkout API. Give it a product URL and a plain-English request; it drives a real browser to a completed purchase and asks a human only when it must.",
+  "colors": {
+    "primary": "#0F766E",
+    "light": "#5EEAD4",
+    "dark": "#134E4A"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "authentication"
+            ]
+          },
+          {
+            "group": "Core concepts",
+            "pages": [
+              "checkout-lifecycle",
+              "user-actions",
+              "webhooks",
+              "live-view"
+            ]
+          },
+          {
+            "group": "Buyers",
+            "pages": [
+              "buyer-profiles",
+              "buyer-sessions"
+            ]
+          },
+          {
+            "group": "Operating the API",
+            "pages": [
+              "sandbox",
+              "errors-and-limits"
+            ]
+          },
+          {
+            "group": "Migrating",
+            "pages": [
+              "migrating-from-crossmint"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API reference",
+        "groups": [
+          {
+            "group": "Reference",
+            "pages": [
+              "api-reference/overview",
+              "api-reference/signup",
+              "api-reference/checkouts",
+              "api-reference/user-actions",
+              "api-reference/buyer-profiles",
+              "api-reference/buyer-sessions",
+              "api-reference/webhooks",
+              "api-reference/api-keys",
+              "api-reference/usage"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "primary": {
+      "type": "button",
+      "label": "Get an API key",
+      "href": "https://docs.checkoutvia.com/quickstart"
+    }
+  }
+}

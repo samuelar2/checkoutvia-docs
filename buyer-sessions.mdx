@@ -1,0 +1,163 @@
+---
+title: "Buyer sessions"
+description: "Bring your own merchant accounts. What is stored, how it is encrypted, and how to see and revoke it."
+---
+
+Plenty of merchants will not let you check out logged out. Food delivery is the obvious case
+— no guest path, a login wall before you can even see a menu — but plenty of retailers gate
+saved addresses or member pricing the same way.
+
+A **buyer session** is the merchant login state a run produced, stored so the next run does
+not have to ask again.
+
+## How one gets created
+
+You cannot create a buyer session directly. There is no `POST`. Sessions only come into
+existence as a side effect of a checkout run:
+
+<Steps>
+  <Step title="A run hits a login wall">
+    The tier-2 agent raises a `credentials` [user action](/user-actions) describing the
+    fields the form asks for. It will not invent credentials or create an account.
+  </Step>
+  <Step title="You submit them">
+    The values pass through the transient, delete-on-read store — the same channel card
+    values use — and are typed into the merchant's login form by the step that consumes
+    them.
+  </Step>
+  <Step title="The resulting cookies are captured immediately">
+    Not at the end of the run: right after the login, while the browser is warm. Waiting
+    for the terminal outcome would lose the session every time the rest of the checkout
+    failed.
+  </Step>
+  <Step title="Later runs start logged in">
+    The next checkout for the same `(buyerProfileId, merchant domain)` pair preloads those
+    cookies before the first navigation, and you see
+    `Loaded saved merchant session` in the timeline.
+  </Step>
+</Steps>
+
+On a successful checkout the stored cookies are refreshed — but only when a session already
+existed or a login just happened. A guest checkout never seeds a session row.
+
+<Note>
+This feature depends on a server-side encryption key being configured. Where it is not,
+`GET /v1/buyer-sessions` returns `{"sessions": [], "vaultEnabled": false}` and runs simply
+proceed logged out. Check `vaultEnabled` before building UI around it.
+</Note>
+
+## What is stored, precisely
+
+**Cookies. Never credentials.**
+
+The distinction is the whole design. A password is a reusable, often-reused secret with
+blast radius far beyond one merchant; a session cookie is scoped, expiring, and revocable by
+the user from the merchant's own account settings. So the credentials you submit live only
+as long as the login step that types them, and what persists is the thing the login
+produced.
+
+| Stored | Not stored |
+| --- | --- |
+| Cookies scoped to the merchant's allowed domains | Passwords or any other credential field value |
+| The registrable merchant domain (e.g. `example-store.com`) | Cookies for any unrelated domain |
+| The owning tenant and buyer profile | Anything derived from the merchant's page content |
+| Created / updated / last-used timestamps | |
+
+Cookies are filtered against the checkout's allowed merchant domains on the way **in** and
+again on the way **out**. The vault never stores, and never hands back, a cookie for a domain
+outside the run's own merchant scope.
+
+### Encryption at rest
+
+The cookie blob is encrypted with AES-256-GCM under a server-side key that is not in the
+database. A row is stored as `iv:authTag:ciphertext`, base64url. A database copy on its own —
+a dump, a snapshot, a stolen replica — does not yield a usable session.
+
+Expired cookies are dropped at load time rather than replayed, and a blob that will not
+decrypt (for instance because the key was rotated) is treated as no session at all: the run
+proceeds logged out and hits the login wall as usual. A vault problem never fails a
+checkout.
+
+## Listing
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json Response (200)
+{
+  "sessions": [
+    {
+      "id": "e21f9a4c-8d16-4b7e-9c05-3a7f61b2d8e4",
+      "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+      "merchantDomain": "example-store.com",
+      "createdAt": "2026-07-21T18:44:02.117Z",
+      "updatedAt": "2026-07-29T09:26:29.702Z",
+      "lastUsedAt": "2026-07-29T09:14:39.500Z"
+    }
+  ],
+  "vaultEnabled": true
+}
+```
+
+Metadata only. There is no endpoint, for you or for us, that returns the cookie blob. The
+`buyerProfileId` query parameter is optional; omit it to list every session for the tenant,
+newest-updated first. This list is not paginated.
+
+`lastUsedAt` is stamped when a session is loaded into a run, so it tells you whether a stored
+login is actually doing anything.
+
+## Revoking
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/buyer-sessions/$SESSION_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json Response (200)
+{ "deleted": true }
+```
+
+This is a hard delete of the row, not a revocation timestamp — unlike API keys, where the
+audit trail matters more than the tidiness. Here the row *is* the credential, so the right
+thing to do with it is destroy it.
+
+<Warning>
+Deleting the row stops **us** using the session. It does not sign the buyer out at the
+merchant. If a session may have been misused, revoke it here **and** end the session from
+the merchant's own account security page.
+</Warning>
+
+`404 Session not found` means the id does not exist or belongs to another tenant — the two
+are not distinguished.
+
+## Deciding whether to use this
+
+Storing merchant logins is real custodial responsibility. Some honest guidance:
+
+<AccordionGroup>
+  <Accordion title="One buyer profile per end user, always">
+    Sessions are keyed on `(tenant, buyerProfileId, merchantDomain)`. Two end users sharing
+    a profile share every merchant login stored against it. A shared "default" profile is a
+    cross-account data leak waiting to happen.
+  </Accordion>
+
+  <Accordion title="Prefer merchants with a guest path">
+    The agent already prefers guest checkout when one exists, and a guest checkout stores
+    nothing. Reach for BYO accounts when a merchant genuinely refuses to sell to a logged-out
+    visitor, not as a default.
+  </Accordion>
+
+  <Accordion title="Credentials are typed, but not forgotten everywhere">
+    The raw values are gone after the login step. The *audit copy* of a submitted action
+    redacts card-shaped field names only — a field called `password` is stored as sent. See
+    [User actions](/user-actions#what-happens-to-submitted-values). Use scoped or throwaway
+    credentials where the merchant allows it.
+  </Accordion>
+
+  <Accordion title="Give end users a revoke button">
+    You have the list and delete endpoints; wire them to your own UI. Someone who let an
+    agent log into their account should be able to take that back without emailing you.
+  </Accordion>
+</AccordionGroup>

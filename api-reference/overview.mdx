@@ -1,0 +1,130 @@
+---
+title: "Overview"
+description: "Base URL, conventions, and every endpoint on one page."
+---
+
+## Base URL
+
+```
+https://api.checkoutvia.com
+```
+
+Everything tenant-scoped lives under `/v1` and requires `Authorization: Bearer <key>`. Two
+surfaces do not:
+
+- `POST /v1/signup` — the one unauthenticated write. Registered ahead of the auth middleware.
+- `/embed/*` — gated by a short-lived embed JWT instead of an API key. See
+  [Live view](/live-view).
+
+## Conventions
+
+<ResponseField name="Content type" type="application/json">
+  Send `content-type: application/json` on every request with a body. Responses are JSON,
+  except `DELETE /v1/checkouts/{id}` (empty `202`) and the `/embed` routes (HTML and
+  `text/event-stream`).
+</ResponseField>
+
+<ResponseField name="Identifiers" type="UUID v4">
+  Checkouts, actions, buyer profiles, buyer sessions, API keys and webhook endpoints are all
+  UUIDs. Merchant order ids on a receipt are the merchant's own format — do not parse them.
+</ResponseField>
+
+<ResponseField name="Timestamps" type="ISO 8601, UTC">
+  `2026-07-29T09:14:31.190Z`. Every timestamp field, everywhere.
+</ResponseField>
+
+<ResponseField name="Money" type="{ amount, currency }">
+  `amount` is a decimal **string** — `"42.10"`, never `42.1`. `currency` is an ISO 4217 code
+  and defaults to `"USD"` where you may omit it.
+</ResponseField>
+
+<ResponseField name="Pagination" type="cursor">
+  List endpoints for checkouts and buyer profiles return `{ data, nextCursor }`, newest
+  first. Pass `nextCursor` back as `?cursor=`; `null` means the end. `limit` defaults to 20
+  and caps at 100.
+</ResponseField>
+
+<ResponseField name="Errors" type="{ error: true, message }">
+  Plus `issues` on validation failures. See [Errors and limits](/errors-and-limits).
+</ResponseField>
+
+## Endpoints
+
+### Health
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `GET` | `/health` | none — returns `{ "ok": true, "service": "checkoutvia" }` |
+
+### [Signup](/api-reference/signup)
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `POST` | `/v1/signup` | none |
+
+### [Checkouts](/api-reference/checkouts)
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/v1/checkouts` |
+| `GET` | `/v1/checkouts` |
+| `GET` | `/v1/checkouts/{id}` |
+| `DELETE` | `/v1/checkouts/{id}` |
+| `POST` | `/v1/checkouts/{id}/embed-token` |
+
+### [User actions](/api-reference/user-actions)
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/v1/checkouts/{id}/actions/{actionId}` |
+
+### [Buyer profiles](/api-reference/buyer-profiles)
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/v1/buyer-profiles` |
+| `GET` | `/v1/buyer-profiles` |
+| `GET` | `/v1/buyer-profiles/{id}` |
+
+### [Buyer sessions](/api-reference/buyer-sessions)
+
+| Method | Path |
+| --- | --- |
+| `GET` | `/v1/buyer-sessions` |
+| `DELETE` | `/v1/buyer-sessions/{id}` |
+
+### [Webhooks](/api-reference/webhooks)
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/v1/webhooks` |
+| `GET` | `/v1/webhooks` |
+| `DELETE` | `/v1/webhooks/{id}` |
+
+### [API keys](/api-reference/api-keys)
+
+| Method | Path |
+| --- | --- |
+| `POST` | `/v1/api-keys` |
+| `GET` | `/v1/api-keys` |
+| `DELETE` | `/v1/api-keys/{id}` |
+
+### [Usage](/api-reference/usage)
+
+| Method | Path |
+| --- | --- |
+| `GET` | `/v1/usage` |
+
+### Live view (embed-token auth)
+
+| Method | Path |
+| --- | --- |
+| `GET` | `/embed/{checkoutId}?token=…` — the viewer page |
+| `GET` | `/embed/{checkoutId}/stream?token=…` — SSE frames |
+
+Documented in [Live view](/live-view).
+
+<Note>
+There is no SDK yet. Everything here is plain HTTP; the [Quickstart](/quickstart) has a
+complete TypeScript client in about a hundred lines of `fetch`.
+</Note>

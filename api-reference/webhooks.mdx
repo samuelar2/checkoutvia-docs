@@ -1,0 +1,116 @@
+---
+title: "Webhooks"
+description: "Register, list and revoke webhook endpoints."
+---
+
+Endpoint management only. The event payload, the signature scheme and the delivery caveats
+are in [Webhooks](/webhooks).
+
+## Register an endpoint
+
+```http
+POST /v1/webhooks
+```
+
+Success: `201`.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/webhooks \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+```
+
+<ParamField body="url" type="string" required>
+  Must be `https://`. `http://localhost` and `http://127.0.0.1` are accepted for local
+  development; nothing else over plain HTTP is.
+</ParamField>
+<ParamField body="label" type="string">
+  Optional, max 200 characters. Yours, for telling endpoints apart in the list.
+</ParamField>
+
+```json Response (201)
+{
+  "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+  "url": "https://hooks.example.com/checkoutvia",
+  "label": "prod",
+  "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
+}
+```
+
+<Warning>
+`secret` is returned exactly once, here. It is the only thing that lets you verify a delivery
+is genuinely from us. There is no rotate endpoint — see
+[rotating a secret](/webhooks#caveats-you-must-design-around).
+</Warning>
+
+`400 Invalid request` with `issues` on a non-https URL or a malformed body.
+
+Multiple endpoints per tenant are supported, each with its own secret. Every active endpoint
+receives every event.
+
+---
+
+## List endpoints
+
+```http
+GET /v1/webhooks
+```
+
+Success: `200`.
+
+```bash
+curl -s https://api.checkoutvia.com/v1/webhooks \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{
+  "endpoints": [
+    {
+      "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+      "url": "https://hooks.example.com/checkoutvia",
+      "label": "prod",
+      "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
+      "lastDeliveryStatus": 200,
+      "createdAt": "2026-07-28T14:03:55.204Z"
+    }
+  ]
+}
+```
+
+Not paginated, newest first. Revoked endpoints are excluded.
+
+<ResponseField name="lastDeliveryAt" type="string | null">
+  When we last attempted a delivery. `null` until the first one.
+</ResponseField>
+<ResponseField name="lastDeliveryStatus" type="integer | null">
+  The raw HTTP status your endpoint returned. The fastest way to notice you have been
+  500ing for a day.
+</ResponseField>
+
+Secrets are never returned by this endpoint.
+
+---
+
+## Revoke an endpoint
+
+```http
+DELETE /v1/webhooks/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{ "revoked": true }
+```
+
+Deliveries stop immediately and the endpoint disappears from the list. Revocation is a
+timestamp, not a row delete, so the delivery history is preserved.
+
+`404 Endpoint not found` if it does not exist, is not yours, or is already revoked.

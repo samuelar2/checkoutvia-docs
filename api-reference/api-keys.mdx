@@ -1,0 +1,143 @@
+---
+title: "API keys"
+description: "Create, list and revoke API keys."
+---
+
+Key management is self-serve: any live key can mint another, so rotation needs no dashboard
+and no downtime. Concepts in [Authentication](/authentication).
+
+## Create a key
+
+```http
+POST /v1/api-keys
+```
+
+Success: `201`.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"prod-worker"}'
+```
+
+<ParamField body="mode" type='"test" | "live"' default="test">
+  Determines both the key's prefix and what it can reach.
+
+  - `test` → `ck_test_…`. **Confined to sandbox merchants**, whatever the account's status.
+  - `live` → `ck_live_…`. Can check out at real merchants.
+
+  A sandbox-only account cannot create a `live` key.
+</ParamField>
+
+<ParamField body="label" type="string">
+  Optional, max 200 characters. Shown in the list; never sent anywhere.
+</ParamField>
+
+An empty body is valid and produces a `test` key.
+
+```json Response (201)
+{
+  "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+  "mode": "test",
+  "keyPrefix": "ck_test_3sQd7yQ",
+  "key": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+}
+```
+
+<Warning>
+`key` is returned exactly once, here. Only `sha256(key)` is stored — no endpoint, support
+process or database query can recover it.
+</Warning>
+
+<ResponseField name="keyPrefix" type="string">
+  The first 16 characters. Safe to store and display next to a key row — it identifies which
+  key without being one.
+</ResponseField>
+
+### Errors
+
+| Status | Message |
+| --- | --- |
+| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live` |
+| `403` | `This account is sandbox-only. Live keys require activation.` |
+
+---
+
+## List keys
+
+```http
+GET /v1/api-keys
+```
+
+Success: `200`.
+
+```bash
+curl -s https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{
+  "keys": [
+    {
+      "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+      "label": "prod-worker",
+      "mode": "live",
+      "keyPrefix": "ck_live_9Hf2QzT",
+      "lastUsedAt": "2026-07-29T09:14:31.190Z",
+      "revokedAt": null,
+      "createdAt": "2026-07-29T09:02:10.771Z"
+    },
+    {
+      "id": "8b7c6d5e-4f30-4a21-9b8c-0d1e2f3a4b5c",
+      "label": "ci",
+      "mode": "test",
+      "keyPrefix": "ck_test_3sQd7yQ",
+      "lastUsedAt": null,
+      "revokedAt": "2026-07-27T11:44:09.331Z",
+      "createdAt": "2026-07-20T08:15:02.640Z"
+    }
+  ]
+}
+```
+
+Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set — filter
+client-side if you only want active ones.
+
+Listing never returns a secret. `keyPrefix` is the most a list can show.
+
+<ResponseField name="lastUsedAt" type="string | null">
+  Written best-effort on every authenticated request; never blocks it. A good rotation signal,
+  not an audit log.
+</ResponseField>
+
+---
+
+## Revoke a key
+
+```http
+DELETE /v1/api-keys/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{ "revoked": true }
+```
+
+Takes effect immediately. Revocation is a timestamp, not a row delete — knowing which key was
+live when matters more than a tidy table if one is ever abused.
+
+`404 Key not found or already revoked` covers all three cases: unknown id, another tenant's
+key, and one already revoked.
+
+<Warning>
+Nothing stops a key revoking itself. Revoke the old key **after** you have confirmed the new
+one is in use — check that the old key's `lastUsedAt` has stopped advancing.
+</Warning>

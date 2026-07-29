@@ -1,0 +1,198 @@
+---
+title: "Migrating from Crossmint Agent Checkouts"
+description: "The contract was mirrored on purpose. What ports over unchanged, what differs, and what you get on top."
+---
+
+Checkoutvia is a from-scratch implementation of the same product category as Crossmint Agent
+Checkouts, built from a full teardown of that product. The data model and the request/response
+shapes were mirrored deliberately, so that a client written against that quickstart is a
+port, not a rewrite.
+
+This page is written for someone with working Crossmint integration code in front of them.
+
+## What is the same
+
+The mental model transfers wholesale, because it was copied on purpose:
+
+| Concept | Same idea |
+| --- | --- |
+| An **intent** — a URL plus a request, driven asynchronously | Our `checkout`. |
+| An append-only **progressItems** timeline | Same name, same role: an ordered list of what the agent did. |
+| **Schema-driven user actions** as the universal "ask the human" channel | Same idea, same JSON-Schema-in-the-payload approach. |
+| Reusable **buyer profiles** for identity and shipping | Same. |
+| A **receipt** on success | Same. |
+| Poll one object for the whole state | Same. |
+
+The status vocabulary is the same set of names:
+
+```
+queued → running → awaiting_user_action → succeeded | failed | cancelled
+```
+
+The card action is the same three fields — `card_number`, `card_expiry`, `card_cvc` — and
+the cardholder name is deliberately still not among them.
+
+If your integration is structured as *create → poll → inspect `pendingUserAction` → build
+values from `responseSchema` → submit → read receipt*, that loop is unchanged. In most
+codebases the port is: swap the base URL, swap the auth header, adjust field names at the
+edges, and rename your `intent` variables.
+
+<Warning>
+Field-for-field parity is not something we can promise on your behalf. The contract was
+mirrored from a teardown, not from a spec we control, and their API has moved on since. Treat
+this page as "the same shape, verify the details" — and diff a real response from each
+against your parser before you cut over. The [API reference](/api-reference/overview) is the
+authority for what we actually return.
+</Warning>
+
+## What differs
+
+Stated plainly, so you find these at build time rather than in production.
+
+<AccordionGroup>
+  <Accordion title="Authentication and base URL">
+    `https://api.checkoutvia.com`, and `Authorization: Bearer ck_test_…` / `ck_live_…`.
+
+    Keys are created and revoked through the API itself (`/v1/api-keys`), stored only as a
+    hash, and shown once. See [Authentication](/authentication).
+  </Accordion>
+
+  <Accordion title="Endpoint paths and naming">
+    Everything lives under `/v1`, and the noun is `checkouts`:
+
+    - `POST /v1/checkouts`
+    - `GET /v1/checkouts` (cursor-paginated summaries)
+    - `GET /v1/checkouts/{id}`
+    - `DELETE /v1/checkouts/{id}`
+    - `POST /v1/checkouts/{id}/actions/{actionId}`
+    - `POST /v1/checkouts/{id}/embed-token`
+
+    Rename `intent` to `checkout` throughout and most of your call sites resolve themselves.
+  </Accordion>
+
+  <Accordion title="Action messages are contextual, not generic">
+    Our `pendingUserAction.message` is written against the page the run is actually on
+    ("This product comes in multiple options — pick one to continue.", "The combination you
+    picked (Size: M, Color: Blue) isn't available — please choose again.").
+
+    If you were substituting your own copy because the upstream text was too generic to show
+    a user, try rendering ours first.
+  </Accordion>
+
+  <Accordion title="Variant prompts carry the store's own option names">
+    The variant action's schema property names are the merchant's option names — `Size`,
+    `Color`, `Grind` — with `oneOf` values restricted to combinations that exist and are in
+    stock. Values are matched back by option name, not by position, so key order in your
+    submitted object is irrelevant.
+  </Accordion>
+
+  <Accordion title="The action key is not on the action object">
+    Ours is exposed on the timeline instead: the newest `user_action` progress item's
+    `data.key`. If your existing code branches on a key field on the action itself, that is
+    the one place you will need a shim. See
+    [Identifying an action](/user-actions#identifying-an-action).
+  </Accordion>
+
+  <Accordion title="No transition back to running after an action resolves">
+    Answering an action resumes the run, but the status stays `awaiting_user_action` until
+    the next action or a terminal state. Branch on `pendingUserAction` being present, not on
+    the status string. See [the wart](/checkout-lifecycle#a-wart-worth-knowing).
+  </Accordion>
+
+  <Accordion title="The live view requires a minted token">
+    The checkout id alone gets you nothing. You mint a short-lived, single-checkout JWT via
+    `POST /v1/checkouts/{id}/embed-token` and use the returned `url`.
+
+    This is a deliberate divergence. The browser stream we tore down accepted any
+    cross-origin connection that knew the intent id — an id that gets logged, pasted into
+    tickets, and shared in URLs. Ours does not. See [Live view](/live-view).
+  </Accordion>
+
+  <Accordion title="Failure reasons are a closed set of four">
+    `max_cost_exceeded`, `user_cancelled`, `user_action_expired`, `automation_failed`, and
+    nothing else. The human-readable detail lives in the final `terminal` progress item's
+    `data.message`, not in `failure`. See
+    [Failure reasons](/checkout-lifecycle#failure-reasons).
+  </Accordion>
+
+  <Accordion title="A sandbox tier exists, and key mode is enforced">
+    A self-serve signup is confined to merchants we control until the account is activated,
+    and — separately — **any request made with a `ck_test_` key is confined too**, even on an
+    activated account.
+
+    If you are used to being live from the first call, expect a `403` the first time you
+    point at a real merchant. The body carries `sandboxMerchants` and says which of the two
+    reasons applied. See [Sandbox](/sandbox).
+  </Accordion>
+</AccordionGroup>
+
+## What we add on top
+
+The four things worth migrating *for*.
+
+<CardGroup cols={2}>
+  <Card title="Webhooks" icon="bell" href="/webhooks">
+    Their API is poll-only. We push `checkout.status_changed` to registered endpoints with an
+    HMAC-SHA256 signature, durable retries, and per-endpoint delivery. Stop burning requests
+    polling a run that is parked on a user action for ten minutes.
+  </Card>
+
+  <Card title="Token-gated live view" icon="eye" href="/live-view">
+    Watch the browser work, over a stream that authorises on a minted, expiring,
+    single-checkout token rather than on an id anyone might know. Read-only by construction —
+    no input path exists.
+  </Card>
+
+  <Card title="Bring your own merchant accounts" icon="key" href="/buyer-sessions">
+    Merchants that refuse to sell to a logged-out visitor are a hard wall for guest-only
+    automation. A `credentials` action logs in once; the resulting cookies are encrypted at
+    rest with AES-256-GCM, scoped to that merchant's domains, and reused on later runs. Listed
+    and revocable via the API.
+  </Card>
+
+  <Card title="A real sandbox" icon="flask" href="/sandbox">
+    Not a mock — a real browser placing a real order on a store we control, through the same
+    engine and the same code paths. Prove your `decline`, expiry and `max_cost_exceeded`
+    handling before you point at a merchant that will actually charge someone.
+  </Card>
+</CardGroup>
+
+Two smaller ones worth knowing about:
+
+- **Usage you can query.** `GET /v1/usage` returns completed checkouts by day plus gross
+  merchandise volume by currency. We meter completed checkouts, never attempts — charging for
+  attempts would mean earning more when the agent fails, which is backwards for a product
+  whose entire problem is reliability.
+- **Marketing opt-ins refused in code.** Not "the prompt says not to". The click is refused
+  outright unless we can positively observe that the box is already ticked and we would be
+  unticking it. This came out of a real production purchase where a prompted-not-to agent
+  subscribed a buyer to a mailing list anyway.
+
+## A porting checklist
+
+<Steps>
+  <Step title="Swap base URL and auth">
+    `https://api.checkoutvia.com`, `Authorization: Bearer ck_…`. Sign up with
+    `POST /v1/signup` for a sandbox key in one call.
+  </Step>
+  <Step title="Rename intent → checkout at your call sites">
+    Paths, variable names, and any stored ids. Ours are UUIDs.
+  </Step>
+  <Step title="Fix your action-type branch">
+    Branch on `pendingUserAction.key` — `card`, `variant`, `credentials`, `otp`.
+  </Step>
+  <Step title="Fix your poll condition">
+    Branch on `pendingUserAction` presence, not `status === "awaiting_user_action"`.
+  </Step>
+  <Step title="Re-point your failure handling at the four reasons">
+    And read the detail message from the final `terminal` progress item, not from `failure`.
+  </Step>
+  <Step title="Run the whole flow in the sandbox">
+    Including `decline`, expiry, and a deliberate `max_cost_exceeded`. Diff a real response
+    against your parser before you point at a real merchant.
+  </Step>
+  <Step title="Then take the upgrades">
+    Register a webhook endpoint and delete your polling loop. Add the live view to your
+    operator console.
+  </Step>
+</Steps>

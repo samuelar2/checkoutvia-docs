@@ -1,0 +1,237 @@
+---
+title: "Errors and limits"
+description: "Every status code the API returns, the quotas and their real numbers, how maxCost is enforced, and what is honestly missing."
+---
+
+## Error shape
+
+Every error is the same object:
+
+```json
+{ "error": true, "message": "Checkout not found" }
+```
+
+Validation failures add the raw Zod issues, which are precise enough to point at the offending
+field:
+
+```json
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    {
+      "code": "invalid_string",
+      "validation": "url",
+      "path": ["target", "url"],
+      "message": "Invalid url"
+    }
+  ]
+}
+```
+
+There are no error codes. Match on the HTTP status; treat `message` as text for a human, and
+`issues[].path` as the machine-readable part when it is present.
+
+One error carries an extra machine-readable field. A sandbox confinement `403` includes the
+hosts you *can* reach, so you never have to parse the message:
+
+```json
+{
+  "error": true,
+  "message": "Cannot check out at example-store.com: This request used a test key. Use a live key to check out at real merchants. Sandbox merchants: your-sandbox-store.myshopify.com.",
+  "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
+}
+```
+
+The two reasons a request is confined — a sandbox-only account, or a `ck_test_` key — are
+distinguished in the message. See [Sandbox](/sandbox).
+
+<Note>
+Two endpoints break the JSON pattern: `DELETE /v1/checkouts/{id}` returns `202` with an empty
+body, and the `/embed` routes return plain text (`Invalid or expired embed token`) because
+they are consumed by a browser, not an API client.
+</Note>
+
+## Status codes
+
+| Code | When |
+| --- | --- |
+| `200` | Successful read, successful action submit, successful revoke/delete. |
+| `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
+| `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
+| `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist. |
+| `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
+| `403` | Account suspended; sandbox confinement; live-key request from a sandbox-only account; signup closed. |
+| `404` | Not found, or owned by another tenant — the two are not distinguished. |
+| `409` | The action you are answering is already `submitted`, `declined` or `expired`. |
+| `429` | A quota was hit. See below. |
+
+### The 404s
+
+| Message | Endpoint |
+| --- | --- |
+| `Checkout not found` | `GET`/`DELETE /v1/checkouts/{id}`, `POST .../embed-token`, `POST .../actions/{id}` |
+| `Action not found` | `POST /v1/checkouts/{id}/actions/{actionId}` — no such action **on this checkout** |
+| `Profile not found` | `GET /v1/buyer-profiles/{id}` |
+| `Session not found` | `DELETE /v1/buyer-sessions/{id}` |
+| `Endpoint not found` | `DELETE /v1/webhooks/{id}` |
+| `Key not found or already revoked` | `DELETE /v1/api-keys/{id}` |
+
+Every lookup is scoped to the authenticated tenant. Another tenant's checkout is a `404`, not
+a `403` — you learn nothing about whether it exists.
+
+### The 409
+
+```json
+{ "error": true, "message": "Action already submitted" }
+```
+
+This is also your idempotency signal. If your own submit retries and comes back
+`Action already submitted`, the first attempt landed — poll the checkout rather than treating
+it as a failure.
+
+## Quotas
+
+Two independent per-tenant limits, both enforced at `POST /v1/checkouts`, both returning
+`429`.
+
+<ResponseField name="Active checkouts" type="5 concurrent (default)">
+  ```json
+  { "error": true, "message": "Active checkout limit reached (5). Wait for runs to finish or cancel them." }
+  ```
+
+  "Active" means any checkout not in `succeeded`, `failed` or `cancelled` — including
+  `queued` and including one parked on a user action.
+
+  This is a resource cap as much as an abuse cap: every non-terminal checkout is holding a
+  real browser. The practical consequence is that an unanswered action ties up a slot for its
+  full 10-minute TTL. `DELETE` checkouts you have given up on rather than waiting them out.
+</ResponseField>
+
+<ResponseField name="Daily volume" type="200 per rolling 24h (default)">
+  ```json
+  { "error": true, "message": "Daily checkout limit reached (200 per 24h)." }
+  ```
+
+  A rolling 24-hour window over creation time, not a calendar day. It is a velocity brake: an
+  agentic checkout platform without one is a card-testing tool waiting to be discovered.
+</ResponseField>
+
+Both are raisable per tenant — ask, with a sense of your volume. Neither limit sends a
+`Retry-After` header; for the concurrency limit, retry when one of your own runs finishes.
+
+### Signup limits
+
+`POST /v1/signup` is unauthenticated, so it carries its own limits: **3 per hour per source
+IP** and **200 per 24 hours platform-wide**. See [Sandbox](/sandbox#signup-limits).
+
+### What is not rate-limited
+
+Reads. There is no limit on `GET /v1/checkouts/{id}`, so polling is free. Be sensible — a
+3–5 second interval is right for a process that takes minutes — but you will not be throttled
+for it.
+
+## maxCost enforcement
+
+`constraints.maxCost` is your spending ceiling for a single checkout:
+
+```json
+{ "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } } }
+```
+
+`amount` is a decimal string. `currency` defaults to `"USD"` if you omit it. Both checks run
+**before** a card is ever requested, so a breach costs you nothing.
+
+<Steps>
+  <Step title="Item price — Shopify tier only">
+    When the variant resolves, its price is compared against `maxCost`. This is the item
+    price alone: no shipping, no tax. It also ignores currency, because the storefront
+    product JSON does not state one.
+
+    Fails with `max_cost_exceeded` and the message
+    `Item price 65.00 exceeds maxCost 60.00`.
+  </Step>
+  <Step title="Order total — both tiers">
+    At the moment the engine wants to ask for a card, it reports the total displayed on the
+    page — which does include shipping and tax. If that exceeds `maxCost`, the run fails
+    instead of raising the card action.
+
+    The comparison runs when both values parse and the currencies do not contradict each
+    other. If the page's currency cannot be determined, the check still enforces against the
+    number: a false stop is far cheaper than an uncapped purchase.
+
+    Fails with `max_cost_exceeded` and the message
+    `Order total 61.40 USD exceeds maxCost 60.00 USD`.
+  </Step>
+</Steps>
+
+<Warning>
+**`maxCost` is a strong guardrail, not a hard ceiling.** The order-total check depends on
+reading a total off the merchant's page. If no total can be parsed there is nothing to
+compare, and the run proceeds to ask you for a card.
+
+Two things follow. First, the real ceiling should be the card: use single-use instruments
+with their own limit. Second, you are the last check — you can always inspect the checkout
+before answering a `card` action, and `decline` if the run's timeline does not look like what
+you asked for.
+</Warning>
+
+Omitting `maxCost` means no cost enforcement at all. For anything touching a real merchant,
+set it.
+
+## Other input limits
+
+| Field | Limit |
+| --- | --- |
+| `target.url` | Must be a valid absolute URL. |
+| `target.merchantContext` | 4000 characters. |
+| `target.allowedDomains` | Max 10 entries, hostnames only — no scheme, no path. |
+| `target.countryCode` | Two letters, ISO 3166-1 alpha-2. Inferred from the URL's ccTLD when omitted. |
+| `label` (API keys, webhooks) | 200 characters. |
+| `name` (signup) | 120 characters. `email`, 200. |
+| `limit` (list endpoints) | Defaults to 20. Must be an integer from 1 to 100; anything else is a `400`. |
+| Webhook `url` | Must be `https://`, except `http://localhost` and `http://127.0.0.1`. |
+
+## Known gaps
+
+Things a reasonable integrator expects that do not exist yet. Listed so you design around
+them rather than discover them.
+
+<AccordionGroup>
+  <Accordion title="No update or delete for buyer profiles">
+    `POST`, `GET` and list only. Correcting an address means creating a new profile, and
+    there is no way to remove a profile a buyer asked you to delete.
+  </Accordion>
+
+  <Accordion title="No way to list an action's history">
+    Only the currently pending action is exposed, on the checkout object. Once resolved it
+    disappears from the API. The timeline retains the fact that it happened — kind
+    `user_action`, with `data.key` — but not what was submitted.
+  </Accordion>
+
+  <Accordion title="The action key is not on pendingUserAction">
+    You have to read it from the newest `user_action` progress item. See
+    [Identifying an action](/user-actions#identifying-an-action).
+  </Accordion>
+
+  <Accordion title="No transition back to running after an action is answered">
+    The status stays `awaiting_user_action` until the next action or a terminal state. Branch
+    on the presence of `pendingUserAction`, not on the status. See
+    [the wart](/checkout-lifecycle#a-wart-worth-knowing).
+  </Accordion>
+
+  <Accordion title="Webhooks have no event id and no ordering guarantee">
+    Dedupe on `(checkoutId, status)` or, better, on the state you fetch. See
+    [Webhooks](/webhooks#caveats-you-must-design-around).
+  </Accordion>
+
+  <Accordion title="No retry, replay or clone of a checkout">
+    A failed checkout is final. Create a new one with the same body.
+  </Accordion>
+
+  <Accordion title="No search across checkouts">
+    List supports `status`, `limit` and `cursor`. You cannot filter by `metadata`, by
+    merchant, or by date range — keep your own index keyed on the checkout id you got at
+    creation.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,174 @@
+---
+title: "Authentication"
+description: "Bearer API keys, how they are stored, how to rotate them, and what key mode actually controls."
+---
+
+Every call to `/v1/*` except `POST /v1/signup` requires a bearer token:
+
+```bash
+curl https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+```
+
+There is no other auth scheme. No query-string keys, no HMAC request signing, no OAuth. The
+one exception is the live-view embed, which is gated by a separate short-lived JWT rather
+than your API key — see [Live view](/live-view).
+
+## Key format
+
+```
+ck_test_<24 random bytes, base64url>
+ck_live_<24 random bytes, base64url>
+```
+
+The mode is in the key itself on purpose, and it is not just a label — see
+[what key mode actually controls](#what-key-mode-actually-controls). A misrouted key should be
+obvious at a glance in a config file or a log line, and it should also refuse to do damage.
+
+## Keys are shown once
+
+The API stores only `sha256(key)`, plus enough non-secret metadata for a dashboard to render
+a key row: its 16-character prefix, its mode, when it was created, and when it was last used.
+
+Consequences, stated plainly:
+
+- The plaintext is returned exactly once, in the `key` field of the `POST /v1/api-keys`
+  response (or `apiKey` from `POST /v1/signup`). Nothing can recover it afterwards.
+- Losing a key is not a support ticket. Create a new one and revoke the old one.
+- Anyone holding the key holds the whole tenant. Keys are tenant-scoped, not user-scoped or
+  scope-limited — there are no read-only keys.
+
+## Managing keys
+
+<CodeGroup>
+```bash Create
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"test","label":"ci"}'
+```
+
+```bash List
+curl -s https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```bash Revoke
+curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+</CodeGroup>
+
+```json Create → 201
+{
+  "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+  "mode": "test",
+  "keyPrefix": "ck_test_3sQd7yQ",
+  "key": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+}
+```
+
+```json List → 200
+{
+  "keys": [
+    {
+      "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+      "label": "ci",
+      "mode": "test",
+      "keyPrefix": "ck_test_3sQd7yQ",
+      "lastUsedAt": "2026-07-29T09:14:31.190Z",
+      "revokedAt": null,
+      "createdAt": "2026-07-29T09:02:10.771Z"
+    }
+  ]
+}
+```
+
+Listing never returns a secret — the `key` field exists only on the creation response.
+
+### Rotation
+
+Any live key can mint another key, so rotation needs no downtime and no dashboard:
+
+1. `POST /v1/api-keys` — deploy the new key.
+2. Confirm the old key's `lastUsedAt` has stopped advancing.
+3. `DELETE /v1/api-keys/{id}` on the old one.
+
+Revocation is a timestamp, not a row delete. A revoked key stays in the list with
+`revokedAt` set and stops authenticating immediately. Keeping the record matters more than a
+tidy table if a key is ever abused — you want to be able to say which key was live when.
+
+## What key mode actually controls
+
+Mode is enforced, not decorative. **A `ck_test_` key can only check out at sandbox
+merchants** — merchants we control — no matter how your account is configured.
+
+`POST /v1/checkouts` confines a request to sandbox merchants if **either** of these is true:
+
+1. The account is sandbox-only, or
+2. the request arrived on a `ck_test_` key.
+
+So a fully activated, live account holding a test key still cannot spend real money. The two
+triggers are independent on purpose: account status is a property of who you are, key mode is
+a property of the credential in front of you, and each should be able to stop a real purchase
+on its own.
+
+```bash
+# Same account, same body. Different key, different outcome.
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer ck_test_…" -H 'content-type: application/json' \
+  -d '{"target":{"url":"https://example-store.com/products/widget"}}'
+# → 403  Cannot check out at example-store.com: This request used a test key. …
+
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer ck_live_…" -H 'content-type: application/json' \
+  -d '{"target":{"url":"https://example-store.com/products/widget"}}'
+# → 201
+```
+
+The full refusal, including which of the two reasons applied, is documented in
+[Sandbox](/sandbox#what-you-cannot-do).
+
+### Minting a live key
+
+A sandbox-only account **cannot create one**. `POST /v1/api-keys` with `{"mode":"live"}`
+returns `403`:
+
+```json
+{
+  "error": true,
+  "message": "This account is sandbox-only. Live keys require activation."
+}
+```
+
+Once the account is activated, `{"mode":"live"}` works and only then can any of its keys
+reach a real merchant.
+
+<Tip>
+This gives you a genuinely spend-proof credential for CI, staging, and anything running
+unattended: issue a `test` key. It exercises the entire product — real browser, real
+storefront, real card entry, a genuinely placed order — against a sandbox merchant, and it
+cannot be pointed anywhere else even by accident.
+</Tip>
+
+<Note>
+Mode is fixed at creation. There is no way to promote a `test` key to `live` — create a new
+key and revoke the old one.
+</Note>
+
+## Auth failures
+
+| Status | Body `message` | Cause |
+| --- | --- | --- |
+| `401` | `Missing bearer token` | No `Authorization` header, or it does not match `Bearer <token>`. |
+| `401` | `Invalid or revoked API key` | The token's hash matches no active key row. |
+| `403` | `Tenant suspended` | The key is valid but the tenant has `suspended_at` set. Contact us. |
+
+All three come back as `{ "error": true, "message": "..." }`. There is no distinction in the
+401 between "never existed" and "revoked" — deliberately, since that difference is only
+useful to someone probing.
+
+<Note>
+`lastUsedAt` is written best-effort on every authenticated request and never blocks it. Treat
+it as a good signal for rotation, not as an audit log.
+</Note>

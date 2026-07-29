@@ -1,0 +1,480 @@
+---
+title: "Quickstart"
+description: "Sign up, buy something, answer the two questions the agent asks. Copy-pasteable curl, then the same flow in TypeScript."
+---
+
+This walks the whole loop: get a key, store a buyer, create a checkout, poll it, answer a
+variant question, answer a card question, read the receipt.
+
+A self-serve signup gets you a **sandbox** tenant. It is the real engine against a store we
+control — a genuinely placed order, a real variant prompt, real card entry — with no path
+to a real merchant. See [Sandbox](/sandbox) for what changes when you go live.
+
+<Note>
+The API base URL is `https://api.checkoutvia.com`. Every authenticated call takes
+`Authorization: Bearer <your key>`.
+</Note>
+
+## 1. Sign up
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/signup \
+  -H 'content-type: application/json' \
+  -d '{"name":"Acme Agents","email":"you@example.com"}'
+```
+
+```json Response (201)
+{
+  "tenantId": "6f0f2f39-8a34-4a8f-9a1a-1d0f4b9a2c77",
+  "name": "Acme Agents",
+  "sandboxOnly": true,
+  "sandboxMerchants": ["your-sandbox-store.myshopify.com"],
+  "apiKey": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+}
+```
+
+<Warning>
+`apiKey` is shown exactly once. Only a SHA-256 hash is stored — there is no endpoint, no
+support process, and no database query that can recover it. Lost key means
+`POST /v1/api-keys` for a new one.
+</Warning>
+
+```bash
+export CKV_KEY=ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb
+```
+
+## 2. Store a buyer profile
+
+The agent needs somewhere to ship. A buyer profile is reusable identity and shipping detail;
+you pass its id when creating a checkout.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "label": "default",
+    "name": { "first": "Ada", "last": "Lovelace" },
+    "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+    "shipping": {
+      "addressLines": ["1 Analytical Way"],
+      "locality": "Louisville",
+      "administrativeAreaCode": "KY",
+      "postalCode": "40202",
+      "countryCode": "US"
+    }
+  }'
+```
+
+```json Response (201)
+{
+  "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "label": "default",
+  "name": { "first": "Ada", "last": "Lovelace" },
+  "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+  "shipping": {
+    "addressLines": ["1 Analytical Way"],
+    "locality": "Louisville",
+    "administrativeAreaCode": "KY",
+    "postalCode": "40202",
+    "countryCode": "US"
+  },
+  "createdAt": "2026-07-29T09:12:04.881Z"
+}
+```
+
+<Tip>
+`administrativeAreaCode` is not optional in practice for US and CA addresses. Shopify will
+not offer a shipping method until the state/province is set, and without a shipping method
+the order can never be placed.
+</Tip>
+
+## 3. Create the checkout
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "target": {
+      "url": "https://your-sandbox-store.myshopify.com/products/widget",
+      "request": "buy this, cheapest delivery"
+    },
+    "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+    "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+    "metadata": { "orderRef": "acme-4412" }
+  }'
+```
+
+```json Response (201)
+{
+  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "queued",
+  "target": {
+    "kind": "direct_url",
+    "url": "https://your-sandbox-store.myshopify.com/products/widget",
+    "request": "buy this, cheapest delivery"
+  },
+  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "metadata": { "orderRef": "acme-4412" },
+  "progressItems": [
+    {
+      "kind": "intent_started",
+      "label": "Started checkout",
+      "data": {},
+      "at": "2026-07-29T09:14:31.203Z",
+      "sequence": 1
+    }
+  ],
+  "createdAt": "2026-07-29T09:14:31.190Z",
+  "updatedAt": "2026-07-29T09:14:31.190Z"
+}
+```
+
+```bash
+export CKV_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
+```
+
+## 4. Poll
+
+```bash
+curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+Within a few seconds the browser is up and the agent is on the product page. When it needs
+something from you, `pendingUserAction` appears:
+
+```json Response (200) — abridged timeline
+{
+  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "awaiting_user_action",
+  "target": {
+    "kind": "direct_url",
+    "url": "https://your-sandbox-store.myshopify.com/products/widget",
+    "request": "buy this, cheapest delivery"
+  },
+  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "metadata": { "orderRef": "acme-4412" },
+  "browser": {
+    "embedTokenUrl": "/v1/checkouts/9a2f1c84-6b70-4d3e-8f21-5c0ab7e91d55/embed-token",
+    "permissions": ["read"]
+  },
+  "progressItems": [
+    { "kind": "intent_started", "label": "Started checkout", "data": {}, "at": "2026-07-29T09:14:31.203Z", "sequence": 1 },
+    { "kind": "step", "label": "Browser session started", "data": {}, "at": "2026-07-29T09:14:39.502Z", "sequence": 2 },
+    { "kind": "step", "label": "Checkout phase: product", "data": { "url": "https://your-sandbox-store.myshopify.com/products/widget" }, "at": "2026-07-29T09:14:44.117Z", "sequence": 3 },
+    { "kind": "user_action", "label": "This product comes in multiple options — pick one to continue.", "data": { "key": "variant" }, "at": "2026-07-29T09:14:45.630Z", "sequence": 4 }
+  ],
+  "pendingUserAction": {
+    "id": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+    "key": "variant",
+    "message": "This product comes in multiple options — pick one to continue.",
+    "responseSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Size", "Color"],
+      "properties": {
+        "Size": {
+          "type": "string",
+          "title": "Size",
+          "oneOf": [
+            { "const": "S", "title": "S" },
+            { "const": "M", "title": "M" },
+            { "const": "L", "title": "L" }
+          ]
+        },
+        "Color": {
+          "type": "string",
+          "title": "Color",
+          "oneOf": [
+            { "const": "Black", "title": "Black" },
+            { "const": "Blue", "title": "Blue" }
+          ]
+        }
+      }
+    },
+    "expiresAt": "2026-07-29T09:24:45.612Z"
+  },
+  "createdAt": "2026-07-29T09:14:31.190Z",
+  "updatedAt": "2026-07-29T09:14:45.622Z"
+}
+```
+
+<Warning>
+**Poll on `pendingUserAction`, not on `status` alone.** Once you answer an action, the
+status stays `awaiting_user_action` while the run continues — it only changes again when
+the next action is raised or the checkout reaches `succeeded` / `failed` / `cancelled`.
+The reliable "the agent needs me" test is `pendingUserAction` being present. See
+[Checkout lifecycle](/checkout-lifecycle#a-wart-worth-knowing).
+</Warning>
+
+<Note>
+`browser.embedTokenUrl` marks that a browser exists. `POST` to it to mint a short-lived
+viewable URL — see [Live view](/live-view).
+</Note>
+
+## 5. Answer the variant
+
+Read `responseSchema.properties`, build an object with the same keys, and submit:
+
+```bash
+curl -sX POST \
+  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60 \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{ "action": "submit", "values": { "Size": "M", "Color": "Black" } }'
+```
+
+The response is the full checkout again, with `pendingUserAction` gone. The run resumes:
+it adds the variant to the cart, walks the checkout, fills contact and shipping from your
+buyer profile, and picks a shipping method.
+
+## 6. Answer the card
+
+At the payment step the run stops again. This action always has exactly the same shape,
+whichever engine drove the checkout:
+
+```json pendingUserAction
+{
+  "id": "9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4",
+  "message": "Enter a single-use / agent card to complete this purchase.",
+  "responseSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["card_number", "card_expiry", "card_cvc"],
+    "properties": {
+      "card_number": {
+        "type": "string",
+        "title": "Card number",
+        "minLength": 1,
+        "description": "Single-use / agent card number for this purchase."
+      },
+      "card_expiry": { "type": "string", "title": "Expiration date (MM / YY)", "minLength": 1 },
+      "card_cvc": { "type": "string", "title": "Security code", "minLength": 1 }
+    }
+  },
+  "expiresAt": "2026-07-29T09:31:02.418Z"
+}
+```
+
+```bash
+curl -sX POST \
+  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4 \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "action": "submit",
+    "values": {
+      "card_number": "4111111111111111",
+      "card_expiry": "12 / 30",
+      "card_cvc": "123"
+    }
+  }'
+```
+
+<Warning>
+Use single-use or agent-issued card numbers. Raw values go to a transient, delete-on-read
+store and are erased once the step that types them completes; only a redacted copy is kept
+for audit. That is a good posture, not a vault — do not send a card you would mind seeing
+used exactly once.
+</Warning>
+
+The cardholder name is never asked for. It comes from the buyer profile.
+
+## 7. Receipt
+
+```json Final poll (200) — abridged
+{
+  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "succeeded",
+  "target": {
+    "kind": "direct_url",
+    "url": "https://your-sandbox-store.myshopify.com/products/widget",
+    "request": "buy this, cheapest delivery"
+  },
+  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "metadata": { "orderRef": "acme-4412" },
+  "progressItems": [
+    { "kind": "step", "label": "Filled card details", "data": { "fields": ["cc-number", "cc-exp", "cc-csc", "cc-name"] }, "at": "2026-07-29T09:26:11.004Z", "sequence": 14 },
+    { "kind": "step", "label": "Placing order", "data": {}, "at": "2026-07-29T09:26:12.771Z", "sequence": 15 },
+    { "kind": "step", "label": "Order confirmed", "data": { "merchantOrderId": "1042" }, "at": "2026-07-29T09:26:29.310Z", "sequence": 16 },
+    { "kind": "terminal", "label": "Checkout succeeded", "data": {}, "at": "2026-07-29T09:26:29.688Z", "sequence": 17 }
+  ],
+  "receipt": {
+    "total": { "amount": "42.10", "currency": "USD" },
+    "merchantOrderId": "1042",
+    "evidence": { "url": "https://your-sandbox-store.myshopify.com/checkouts/c/abc123/thank_you" }
+  },
+  "createdAt": "2026-07-29T09:14:31.190Z",
+  "updatedAt": "2026-07-29T09:26:29.702Z"
+}
+```
+
+---
+
+## The same flow in TypeScript
+
+No SDK yet — this is plain `fetch` and it is the whole client. Node 20+ or any modern
+runtime.
+
+```ts checkout.ts
+const BASE = "https://api.checkoutvia.com";
+const KEY = process.env.CKV_KEY!;
+
+type Json = Record<string, any>;
+
+async function api(path: string, init: RequestInit = {}): Promise<Json> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  // 202 (cancel) has no body; everything else returns JSON.
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    throw new Error(`${init.method ?? "GET"} ${path} → ${res.status}: ${body.message ?? text}`);
+  }
+  return body;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Decide what an action is asking for. `pendingUserAction.key` is set by the engine that
+ * raised it; the schema sniff only covers actions raised before that field existed.
+ * See /user-actions#identifying-an-action.
+ */
+function actionKey(checkout: Json): string | undefined {
+  if (checkout.pendingUserAction?.key) return checkout.pendingUserAction.key;
+  const props = checkout.pendingUserAction?.responseSchema?.properties ?? {};
+  return "card_number" in props ? "card" : undefined;
+}
+
+/** Pick the first allowed value of every field — fine for a demo, not for a real UI. */
+function firstChoices(schema: Json): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const [name, prop] of Object.entries<any>(schema.properties ?? {})) {
+    const first = prop.oneOf?.[0]?.const;
+    if (first !== undefined) values[name] = first;
+  }
+  return values;
+}
+
+async function main() {
+  const profile = await api("/v1/buyer-profiles", {
+    method: "POST",
+    body: JSON.stringify({
+      label: "default",
+      name: { first: "Ada", last: "Lovelace" },
+      contact: { email: "ada@example.com", phone: "+15555550123" },
+      shipping: {
+        addressLines: ["1 Analytical Way"],
+        locality: "Louisville",
+        administrativeAreaCode: "KY",
+        postalCode: "40202",
+        countryCode: "US",
+      },
+    }),
+  });
+
+  let checkout = await api("/v1/checkouts", {
+    method: "POST",
+    body: JSON.stringify({
+      target: {
+        url: "https://your-sandbox-store.myshopify.com/products/widget",
+        request: "buy this, cheapest delivery",
+      },
+      buyerProfileId: profile.id,
+      constraints: { maxCost: { amount: "60.00", currency: "USD" } },
+      metadata: { orderRef: "acme-4412" },
+    }),
+  });
+
+  const id = checkout.id as string;
+  let lastSequence = 0;
+
+  // Poll. 3–5s is a reasonable interval; a full run is minutes, not seconds.
+  for (let i = 0; i < 300; i++) {
+    await sleep(4000);
+    checkout = await api(`/v1/checkouts/${id}`);
+
+    // Stream new timeline entries to your logs / UI.
+    for (const item of checkout.progressItems ?? []) {
+      if (item.sequence > lastSequence) {
+        lastSequence = item.sequence;
+        console.log(`[${item.sequence}] ${item.kind}: ${item.label}`);
+      }
+    }
+
+    if (["succeeded", "failed", "cancelled"].includes(checkout.status)) break;
+
+    const action = checkout.pendingUserAction;
+    if (!action) continue; // status may still read awaiting_user_action while it works
+
+    const key = actionKey(checkout);
+    const path = `/v1/checkouts/${id}/actions/${action.id}`;
+
+    if (key === "card") {
+      checkout = await api(path, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "submit",
+          values: {
+            card_number: process.env.CKV_DEMO_CARD!,
+            card_expiry: "12 / 30",
+            card_cvc: "123",
+          },
+        }),
+      });
+    } else if (key === "variant") {
+      checkout = await api(path, {
+        method: "POST",
+        body: JSON.stringify({ action: "submit", values: firstChoices(action.responseSchema) }),
+      });
+    } else {
+      // credentials / otp / anything the tier-2 agent invented: a human has to see this.
+      console.log("Needs a human:", action.message, action.responseSchema);
+      await api(path, {
+        method: "POST",
+        body: JSON.stringify({ action: "decline", reason: "no operator available" }),
+      });
+    }
+  }
+
+  if (checkout.status === "succeeded") {
+    console.log("Order", checkout.receipt.merchantOrderId, "for", checkout.receipt.total);
+  } else {
+    console.error("Ended", checkout.status, checkout.failure?.reason);
+  }
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+```
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Checkout lifecycle" icon="diagram-project" href="/checkout-lifecycle">
+    Every status, every failure reason, and what actually causes each one.
+  </Card>
+  <Card title="User actions" icon="hand" href="/user-actions">
+    The full human-in-the-loop contract: keys, schemas, TTLs, decline.
+  </Card>
+  <Card title="Webhooks" icon="bell" href="/webhooks">
+    Stop polling. Signature verification included.
+  </Card>
+  <Card title="Sandbox" icon="flask" href="/sandbox">
+    What a sandbox tenant can and cannot do, and how to go live.
+  </Card>
+</CardGroup>

@@ -1,0 +1,148 @@
+---
+title: "User actions"
+description: "Submit or decline a pending user action."
+---
+
+One endpoint. It resolves the checkout's currently pending action and resumes the run.
+
+For the concepts — action keys, schema rendering, TTLs, what happens to the values you send —
+see [User actions](/user-actions).
+
+## Resolve an action
+
+```http
+POST /v1/checkouts/{id}/actions/{actionId}
+```
+
+Success: `200`.
+
+`actionId` is `pendingUserAction.id` from the checkout object. It must belong to that
+checkout and still be `pending`.
+
+### Body
+
+A discriminated union on `action`. Nothing else validates.
+
+<Tabs>
+  <Tab title="submit">
+    ```json
+    { "action": "submit", "values": { "Size": "M", "Color": "Black" } }
+    ```
+
+    <ParamField body="action" type='"submit"' required />
+    <ParamField body="values" type="object" required>
+      The object described by `pendingUserAction.responseSchema`. Send exactly the keys in
+      `properties` — the schema is `additionalProperties: false`, so extra keys are
+      meaningless.
+
+      Values should be strings. The API accepts any JSON here, but the engines read them as
+      strings.
+    </ParamField>
+
+    ```bash
+    curl -sX POST \
+      https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
+      -H "authorization: Bearer $CKV_KEY" \
+      -H 'content-type: application/json' \
+      -d '{
+        "action": "submit",
+        "values": {
+          "card_number": "4111111111111111",
+          "card_expiry": "12 / 30",
+          "card_cvc": "123"
+        }
+      }'
+    ```
+  </Tab>
+
+  <Tab title="decline">
+    ```json
+    { "action": "decline", "reason": "buyer changed their mind" }
+    ```
+
+    <ParamField body="action" type='"decline"' required />
+    <ParamField body="reason" type="string">
+      Optional free text, stored on the action for your own audit. Not sent to the merchant.
+    </ParamField>
+
+    Declining fails the checkout with `failure.reason: "user_cancelled"` and tears down the
+    browser.
+
+    ```bash
+    curl -sX POST \
+      https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
+      -H "authorization: Bearer $CKV_KEY" \
+      -H 'content-type: application/json' \
+      -d '{ "action": "decline", "reason": "no operator available" }'
+    ```
+  </Tab>
+</Tabs>
+
+### Response
+
+`200` with the **full checkout object** — the same shape as `GET /v1/checkouts/{id}`, taken
+after the update. `pendingUserAction` is gone.
+
+Note what the status will say: it is still `awaiting_user_action` on a `submit`, because
+there is no transition back to `running`. That is expected. See
+[the wart](/checkout-lifecycle#a-wart-worth-knowing).
+
+```json
+{
+  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "awaiting_user_action",
+  "target": {
+    "kind": "direct_url",
+    "url": "https://example-store.com/products/widget",
+    "request": "buy this in medium, cheapest delivery"
+  },
+  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "metadata": { "orderRef": "acme-4412" },
+  "browser": { "embedTokenUrl": "/v1/checkouts/9a2f1c84-6b70-4d3e-8f21-5c0ab7e91d55/embed-token", "permissions": ["read"] },
+  "progressItems": [
+    { "kind": "intent_started", "label": "Started checkout", "data": {}, "at": "2026-07-29T09:14:31.203Z", "sequence": 1 },
+    { "kind": "step", "label": "Browser session started", "data": {}, "at": "2026-07-29T09:14:39.502Z", "sequence": 2 },
+    { "kind": "step", "label": "Checkout phase: product", "data": { "url": "https://example-store.com/products/widget" }, "at": "2026-07-29T09:14:44.117Z", "sequence": 3 },
+    { "kind": "user_action", "label": "This product comes in multiple options — pick one to continue.", "data": { "key": "variant" }, "at": "2026-07-29T09:14:45.630Z", "sequence": 4 }
+  ],
+  "createdAt": "2026-07-29T09:14:31.190Z",
+  "updatedAt": "2026-07-29T09:14:45.622Z"
+}
+```
+
+### Errors
+
+| Status | Message | Cause |
+| --- | --- | --- |
+| `400` | `Invalid action body` (with `issues`) | Body matched neither the submit nor the decline shape. |
+| `404` | `Checkout not found` | Unknown checkout, or another tenant's. |
+| `404` | `Action not found` | No action with that id **on this checkout**. |
+| `409` | `Action already submitted` / `declined` / `expired` | Already resolved. |
+
+<Tip>
+The `409` is your idempotency signal. If your own submit retries and comes back
+`Action already submitted`, the first attempt landed — poll the checkout instead of treating
+it as a failure.
+</Tip>
+
+## What happens next
+
+<Steps>
+  <Step title="A redacted copy is written to the action record">
+    Card-shaped field names — `card`, `cc-num`, `pan`, `cvc`, `cvv`, `security code`,
+    `expir` — become `"[redacted]"`. Everything else is stored as sent.
+  </Step>
+  <Step title="The raw values go to a transient, delete-on-read store">
+    Keyed by action id, with a short TTL. The only place raw values exist.
+  </Step>
+  <Step title="The resume event carries the action id and the outcome only">
+    Never the values. The event bus persists payloads durably; values must not be in them.
+  </Step>
+  <Step title="The run resumes and consumes the values">
+    Read inside the one step that types them, deleted once that step completes.
+  </Step>
+</Steps>
+
+Submitted values are not returned by any endpoint. Full detail in
+[What happens to submitted values](/user-actions#what-happens-to-submitted-values).

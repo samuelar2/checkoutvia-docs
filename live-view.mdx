@@ -1,0 +1,131 @@
+---
+title: "Live view"
+description: "Mint a short-lived embed token and iframe the running browser. Read-only, ten-minute expiry, one checkout per token."
+---
+
+You can watch the browser work. `progressItems` tells you what happened; the live view shows
+you the page it happened on — which is the difference between "the agent failed at the
+payment step" and "oh, there is a full-screen coupon modal over the pay button".
+
+It is a JPEG screencast of the running browser, streamed over Server-Sent Events, rendered
+into a self-contained page you can drop in an `<iframe>`.
+
+## Mint a token
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json Response (200)
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
+  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "expiresAt": "2026-07-29T09:24:45.000Z"
+}
+```
+
+Then embed `url` directly:
+
+```html
+<iframe
+  src="https://api.checkoutvia.com/embed/1f2e3d4c-...?token=eyJhbGciOiJIUzI1NiJ9..."
+  style="width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 8px"
+  title="Live checkout"
+></iframe>
+```
+
+That is the whole integration. The page inside the frame handles the stream, renders frames,
+and shows a small status chip (`connecting…`, `live`, `ended: succeeded`, `disconnected`).
+
+## The token is the access control
+
+The checkout UUID alone grants nothing. The token is a signed JWT pinned to one
+`checkoutId` claim and checked on every request to the embed routes — so a token minted for
+one run cannot watch another, and knowing a checkout id is not enough to watch it.
+
+This is not incidental. A live browser stream that authorises on an id you might have logged,
+copied into a ticket, or leaked in a URL is a hole; requiring a separately minted,
+short-lived, single-checkout credential closes it.
+
+<ResponseField name="TTL" type="10 minutes">
+  Fixed, not configurable. `expiresAt` is authoritative. After it passes both embed routes
+  return `401 Invalid or expired embed token` as plain text.
+</ResponseField>
+
+<ResponseField name="Scope" type="one checkout">
+  A token whose `checkoutId` claim does not match the path segment is rejected, even if it is
+  otherwise valid and unexpired.
+</ResponseField>
+
+<ResponseField name="Renewal" type="mint a new one">
+  There is no refresh. A run outlasting the window needs a fresh
+  `POST /v1/checkouts/{id}/embed-token` and a reload of the iframe `src`. Minting is cheap
+  and unlimited — for a long run, re-mint on a timer at roughly half the TTL.
+</ResponseField>
+
+<Warning>
+The token appears in the iframe URL's query string, so it lands in browser history and any
+`Referer` your page sends. That is survivable because the token is short-lived, read-only,
+and scoped to one checkout — but do not treat it as harmless, do not log it, and do not
+mint tokens ahead of when you need them.
+</Warning>
+
+## It is read-only
+
+The stream carries frames out. Nothing goes in.
+
+`permissions` is `["read"]` on the checkout's `browser` object because that is the only mode
+that exists. There is no click-through, no keyboard forwarding, no takeover. A viewer cannot
+touch the merchant's page, and a leaked token cannot be used to drive a purchase.
+
+If you want to influence the run, that is what [user actions](/user-actions) are for. The
+live view is a window, not a remote desktop.
+
+## Stream lifecycle
+
+The embed page consumes `GET /embed/{checkoutId}/stream?token=…`, an SSE endpoint with four
+event types:
+
+| Event | Data | Meaning |
+| --- | --- | --- |
+| `status` | the current status | Sent once, immediately on connect. |
+| `frame` | base64 JPEG | A screencast frame. Render as `data:image/jpeg;base64,<data>`. |
+| `ping` | empty | Heartbeat, roughly every 5 seconds. |
+| `ended` | terminal status, or `browser_unavailable` / `gone` | The stream is over; the client closes. |
+
+Connecting to a checkout that is already terminal, or that has no browser session, emits
+`status` then `ended` immediately rather than hanging. The viewer's own connection uses a
+second CDP client, so watching never disturbs the engine driving the page.
+
+## Gotchas
+
+<AccordionGroup>
+  <Accordion title="browser.embedTokenUrl is a pointer, not a viewable URL">
+    `GET /v1/checkouts/{id}` includes:
+
+    ```json
+    "browser": { "embedTokenUrl": "/v1/checkouts/{id}/embed-token", "permissions": ["read"] }
+    ```
+
+    Its presence means a browser session exists and there is something to watch. It is not
+    itself viewable — `POST` to it to mint a token, and use the `url` that comes back.
+  </Accordion>
+
+  <Accordion title="There is nothing to watch before the browser starts">
+    A `queued` checkout has no browser session. The token mints fine, but the stream ends
+    immediately. Wait for `status: "running"` — or for `browser` to appear on the checkout —
+    before showing the frame.
+  </Accordion>
+
+  <Accordion title="The stream ends when the checkout does">
+    On a terminal status the stream sends `ended` and closes. There is no replay: the live
+    view is live only. For after-the-fact review, `progressItems` and
+    `receipt.evidence.url` are what you have.
+  </Accordion>
+
+  <Accordion title="Frames are JPEG, not video">
+    Bandwidth scales with how much the page is changing. It is fine for an operator console
+    watching one or two runs; it is not designed for a wall of fifty concurrent streams.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,192 @@
+---
+title: "Sandbox"
+description: "What sandbox confinement is, the exact refusal you get, and how to reach real merchants."
+---
+
+Self-serve signup is open. Anyone can `POST /v1/signup` and get a working API key in one
+call, with no review and no card on file.
+
+That is only safe because of one gate: **sandbox confinement**. A confined request can only
+check out against merchants we control.
+
+## Two independent triggers
+
+A request to `POST /v1/checkouts` is confined if **either** is true:
+
+<CardGroup cols={2}>
+  <Card title="The account is sandbox-only" icon="building">
+    Every self-serve signup starts here. Confinement applies to every key the account holds,
+    including `ck_live_` ones it cannot create yet.
+  </Card>
+  <Card title="The request used a test key" icon="key">
+    A `ck_test_` key is confined even on a fully activated account. Key mode is a property of
+    the credential, not the account.
+  </Card>
+</CardGroup>
+
+Either one on its own stops a real purchase. That is the point of having two: account status
+answers "is this customer allowed to spend real money", key mode answers "is *this specific
+credential* allowed to", and a mistake in one should not be enough.
+
+## Why the gate is where it is
+
+Every other guardrail on this platform limits *how much* money moves or *how fast*. `maxCost`
+caps a purchase. Quotas cap concurrency and daily volume. Cards are single-use by policy.
+
+None of those decide whether real money is reachable **at all** — and an agentic checkout
+platform that hands a stranger unrestricted access to real merchants is, functionally,
+carding infrastructure. Sandbox confinement is the one control that answers that question, so
+it is on by default and cannot be turned off from inside the API.
+
+## What you can do in the sandbox
+
+Everything. That is the point — it is not a mock.
+
+- Real browser, real merchant storefront, real checkout pages.
+- The real engine, chosen the same way, driving the same code paths.
+- A real variant prompt with the store's real options.
+- Real card entry into real payment iframes.
+- A **genuinely placed order** on the sandbox store, with a real confirmation page and a real
+  `merchantOrderId`.
+- Webhooks, live view, buyer profiles, buyer sessions, usage — all identical.
+
+Your integration in the sandbox is the integration you ship. No code changes when you go
+live; only the target URLs and the key change.
+
+## What you cannot do
+
+<AccordionGroup>
+  <Accordion title="Target a merchant we do not control">
+    `POST /v1/checkouts` against any other host returns `403`, and the body tells you the
+    offending host, which of the two triggers applied, and where you *can* check out:
+
+    ```json
+    {
+      "error": true,
+      "message": "Cannot check out at example-store.com: This account is sandbox-only. Contact us to enable live checkouts. Sandbox merchants: your-sandbox-store.myshopify.com.",
+      "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
+    }
+    ```
+
+    On an activated account using a test key, the same `403` carries the other reason:
+
+    ```json
+    {
+      "error": true,
+      "message": "Cannot check out at example-store.com: This request used a test key. Use a live key to check out at real merchants. Sandbox merchants: your-sandbox-store.myshopify.com.",
+      "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
+    }
+    ```
+
+    Read `sandboxMerchants` from the response rather than parsing the message. Host matching
+    covers subdomains and ignores a leading `www.`.
+  </Accordion>
+
+  <Accordion title="Widen the net with allowedDomains">
+    `target.allowedDomains` is checked by the same gate, not just `target.url`. Naming a real
+    merchant there produces the same `403`, with that host named as the offender.
+
+    This matters because `allowedDomains` is what widens the engine's navigation guard.
+    Checking only the target URL would leave a route straight off the sandbox store — start
+    at the sandbox host, declare a real merchant as an allowed domain, and walk over.
+  </Accordion>
+
+  <Accordion title="Mint a live key (sandbox-only accounts)">
+    `POST /v1/api-keys` with `{"mode":"live"}` returns `403`:
+
+    ```json
+    { "error": true, "message": "This account is sandbox-only. Live keys require activation." }
+    ```
+
+    `{"mode":"test"}` works, and you can create as many test keys as you like.
+  </Accordion>
+</AccordionGroup>
+
+## Signing up
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/signup \
+  -H 'content-type: application/json' \
+  -d '{"name":"Acme Agents","email":"you@example.com"}'
+```
+
+```json Response (201)
+{
+  "tenantId": "6f0f2f39-8a34-4a8f-9a1a-1d0f4b9a2c77",
+  "name": "Acme Agents",
+  "sandboxOnly": true,
+  "sandboxMerchants": ["your-sandbox-store.myshopify.com"],
+  "apiKey": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+}
+```
+
+Both body fields are optional; `email` is only ever used to reach you if your agents start
+doing something alarming. It is not a login — there is no password and no session.
+
+`sandboxMerchants` is the authoritative list of hosts you may target. Read it from the
+response rather than hard-coding it.
+
+### Signup limits
+
+This is the one unauthenticated write on the API, so it is rate-limited on two axes:
+
+| Limit | Value | Response |
+| --- | --- | --- |
+| Per source IP | 3 per hour | `429` — `Too many signups from this address. Try again later.` |
+| Platform-wide | 200 per 24 hours | `429` — `Signups are temporarily paused. Get in touch.` |
+
+Signup can also be closed entirely, in which case every request gets
+`403 Self-serve signup is closed`.
+
+The per-IP window is the cheap common case; the daily cap is the backstop that still holds
+against a rotating-IP flood.
+
+## Testing failure paths
+
+The sandbox is the right place to prove your error handling, and every path is reachable:
+
+| To produce | Do this |
+| --- | --- |
+| `awaiting_user_action` with a `variant` action | Target a sandbox product with multiple options and give a `request` that does not disambiguate. |
+| `awaiting_user_action` with a `card` action | Let a run reach the payment step. |
+| `failed` / `user_cancelled` | `POST` `{"action":"decline"}` to any pending action. |
+| `failed` / `user_action_expired` | Raise an action and wait 10 minutes. |
+| `failed` / `max_cost_exceeded` | Set `constraints.maxCost` below the sandbox product's price. |
+| `cancelled` | `DELETE` a running checkout. |
+| `429` quota | Create 5 checkouts and leave them running, then create a sixth. |
+| `403` confinement | Target any host outside `sandboxMerchants`. |
+
+<Tip>
+Exercise `decline` and `user_action_expired` before you ship. They are the two states most
+integrations forget, and both are guaranteed to happen in production — an operator will walk
+away from a card prompt at some point.
+</Tip>
+
+## Reaching real merchants
+
+Two things have to be true: the account must be activated, and the request must use a
+`ck_live_` key.
+
+### Activating the account
+
+There is no self-serve activation, and that is deliberate. Flipping an account out of
+sandbox-only means it becomes *able* to spend real money at real merchants, which is not a
+button we are willing to put behind a form.
+
+Get in touch. What we need to know is roughly: who the buyers are, which merchants you expect
+to target, what card instruments you will use, and what your volume looks like.
+
+### After activation
+
+- `sandboxOnly` is false, and `POST /v1/api-keys` with `{"mode":"live"}` starts working.
+- Your existing `ck_test_` keys are **still confined to sandbox merchants**. That is not a
+  leftover restriction to work around — it is the point. Keep them for CI and staging.
+- Point production at a new `ck_live_` key. Nothing else in your integration changes.
+- Quotas still apply, and default to 5 concurrent / 200 per day. Tell us what you need and
+  they are raised per-account.
+
+<Tip>
+Because a test key stays confined forever, the safest production layout is: `ck_live_` in one
+place only — the deployed service that is supposed to buy things — and `ck_test_` everywhere
+else. A leaked or misconfigured test key cannot cost anyone money.
+</Tip>

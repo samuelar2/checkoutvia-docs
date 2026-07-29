@@ -1,0 +1,381 @@
+---
+title: "User actions"
+description: "The human-in-the-loop channel: how a request for input arrives, the schema that describes it, how to answer or refuse, and what happens to sensitive values."
+---
+
+An agent that can buy anything on the open web will regularly hit a wall only a person can
+get past. Which of the five sizes? What card? This store demands a login. A code was just
+texted to you.
+
+Rather than guessing, the run stops and asks — through one channel, with one shape, for
+every kind of question. That channel is the **user action**.
+
+## How an action arrives
+
+An action appears on the checkout object you are already polling:
+
+```json
+{
+  "status": "awaiting_user_action",
+  "pendingUserAction": {
+    "id": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+    "key": "variant",
+    "message": "This product comes in multiple options — pick one to continue.",
+    "responseSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Size"],
+      "properties": {
+        "Size": {
+          "type": "string",
+          "title": "Size",
+          "oneOf": [
+            { "const": "S", "title": "S" },
+            { "const": "M", "title": "M" },
+            { "const": "L", "title": "L" }
+          ]
+        }
+      }
+    },
+    "expiresAt": "2026-07-29T09:24:45.612Z"
+  }
+}
+```
+
+<ResponseField name="key" type="string">
+  What is being asked for: `card`, `variant`, `credentials`, `otp`. Branch on this. Omitted
+  on actions raised before this field existed.
+</ResponseField>
+
+<ResponseField name="id" type="string">
+  UUID. Goes in the submit URL. A new action gets a new id every time — never cache one.
+</ResponseField>
+<ResponseField name="message" type="string">
+  Written for a person, in the context of this specific page. Render it as-is.
+</ResponseField>
+<ResponseField name="responseSchema" type="object">
+  A JSON Schema for the object you must send back as `values`. Always
+  `{"type":"object","additionalProperties":false,...}` with a `required` array and a
+  `properties` map.
+</ResponseField>
+<ResponseField name="expiresAt" type="string">
+  ISO 8601. Past this instant, answering fails and the checkout fails with
+  `user_action_expired`.
+</ResponseField>
+
+There is at most one pending action per checkout at a time. The orchestrator runs one
+invocation per checkout, so there is never a race between two open questions.
+
+## Driving a UI from the schema
+
+The schema is a real JSON Schema subset, and it is deliberately narrow so you can render it
+without a schema library:
+
+| Shape | Render as |
+| --- | --- |
+| `{ "type": "string", "title": T, "oneOf": [{ "const": V, "title": L }, …] }` | A select / radio group. `const` is the value to send, `title` the label. |
+| `{ "type": "string", "title": T, "minLength": 1 }` | A single-line text input. |
+| A property also carrying `description` | Helper text under the field. |
+
+Every property is `type: "string"`, always. Send strings — the API accepts any JSON in
+`values`, but the engines read them as strings, so a number will be stringified somewhere you
+cannot see.
+
+`required` lists every property name, and `additionalProperties: false` means extra keys are
+meaningless. Send exactly the listed keys.
+
+## Identifying an action
+
+Rendering a free-text field and a card field the same way is not acceptable — you need to
+know which kind of question this is.
+
+`pendingUserAction.key` is that answer: `card`, `variant`, `credentials`, `otp`. It is set
+by the engine raising the action, not inferred from the merchant's markup.
+
+The reliable read:
+
+```ts
+function actionKey(checkout: any): string | undefined {
+  return checkout.pendingUserAction?.key;
+}
+```
+
+`key` is set by the engine when it raises the action, so it tells you what is being asked
+for regardless of what the merchant's form happened to call its fields. Branch on it.
+
+Actions raised before this field existed have no `key`. If you need to handle those, or want
+a belt-and-braces check before putting a card number on the wire, the card action is the only
+one whose properties include `card_number`:
+
+```ts
+const isCardAction =
+  action.key === "card" || "card_number" in (action.responseSchema?.properties ?? {});
+```
+
+## The action keys
+
+<Tabs>
+  <Tab title="card">
+    Raised by both engines, always with **exactly this schema**. Clients key on its shape,
+    so it is pinned in code rather than generated — on the tier-2 path the model's own
+    field list is discarded in favour of it.
+
+    ```json
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["card_number", "card_expiry", "card_cvc"],
+      "properties": {
+        "card_number": {
+          "type": "string",
+          "title": "Card number",
+          "minLength": 1,
+          "description": "Single-use / agent card number for this purchase."
+        },
+        "card_expiry": { "type": "string", "title": "Expiration date (MM / YY)", "minLength": 1 },
+        "card_cvc": { "type": "string", "title": "Security code", "minLength": 1 }
+      }
+    }
+    ```
+
+    `card_expiry` is typed into the merchant's field character by character, so send it in
+    a form a human would type: `12 / 30` or `12/30`. Spaces and slashes are normalised
+    before verification.
+
+    You are never asked for a cardholder name. It comes from the buyer profile.
+
+    Reaching this action is the guarantee that nothing has been charged yet: the code path
+    that fills a card and clicks pay is only reachable from a resume that carries card
+    values.
+  </Tab>
+
+  <Tab title="variant">
+    Shopify tier only. Raised when the product has several variants and the free-text
+    `request` did not pick one out.
+
+    Property **names are the merchant's own option names** — `Size`, `Color`,
+    `Grind`, whatever that store calls them — and the `oneOf` values are the option values
+    that actually exist on an available variant.
+
+    ```json
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Size", "Color"],
+      "properties": {
+        "Size": {
+          "type": "string",
+          "title": "Size",
+          "oneOf": [{ "const": "M", "title": "M" }, { "const": "L", "title": "L" }]
+        },
+        "Color": {
+          "type": "string",
+          "title": "Color",
+          "oneOf": [{ "const": "Black", "title": "Black" }]
+        }
+      }
+    }
+    ```
+
+    Values are matched back by option **name**, not by position, so key order in your
+    submitted object does not matter.
+
+    If the combination you pick does not exist or is out of stock, the action is re-raised
+    rather than silently substituted:
+
+    ```json
+    { "message": "The combination you picked (Size: M, Color: Blue) isn't available — please choose again." }
+    ```
+
+    Answering the variant question up front is usually possible: a `request` like
+    `"buy this in medium, black"` is matched against option values as whole words, and a
+    single unambiguous winner skips the prompt entirely.
+  </Tab>
+
+  <Tab title="credentials">
+    Tier 2 only. Raised when the site puts a login wall between the agent and checkout and
+    no guest path exists.
+
+    The field list is generated from what the agent read off the login form, so the property
+    names are **not fixed** — expect `email` and `password`, but do not hard-code them.
+
+    ```json
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "password"],
+      "properties": {
+        "email": { "type": "string", "title": "Email address", "minLength": 1 },
+        "password": { "type": "string", "title": "Password", "minLength": 1 }
+      }
+    }
+    ```
+
+    The agent will never invent credentials or create an account. If you have no credentials
+    to give, `decline`.
+
+    After a successful credentials action the run captures the resulting merchant cookies as
+    a reusable session, so the next checkout at that merchant starts logged in — see
+    [Buyer sessions](/buyer-sessions).
+
+    <Warning>
+    Values you submit here are retained in the action's audit record. Only card-shaped field
+    names are redacted; a field literally named `password` is not. See
+    [What happens to submitted values](#what-happens-to-submitted-values).
+    </Warning>
+  </Tab>
+
+  <Tab title="otp">
+    Tier 2 only. Raised when a login or checkout demands a one-time code. Same generated
+    shape as `credentials` — usually a single text field.
+
+    ```json
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": { "type": "string", "title": "Verification code", "minLength": 1 }
+      }
+    }
+    ```
+
+    OTPs are short-lived at the merchant too. If the 10-minute action window is nearly up by
+    the time your operator sees it, expect the code to be stale even if you answer in time.
+  </Tab>
+
+  <Tab title="anything else">
+    Tier 2's request-for-input tool takes a free-form key, so an agent facing something
+    unanticipated can raise an action with a short slug of its own choosing and a field list
+    it derived from the page.
+
+    Treat unknown keys as "route this to a human" rather than as an error. Your integration
+    must have a path for an action it cannot auto-answer — either surface it to an operator
+    or `decline`. If you never handle them, those checkouts will die on the TTL instead of
+    failing fast.
+  </Tab>
+</Tabs>
+
+## Submitting
+
+```bash
+curl -sX POST \
+  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{ "action": "submit", "values": { "Size": "M", "Color": "Black" } }'
+```
+
+The response is the full checkout object, re-serialized after the update — the same shape as
+`GET /v1/checkouts/{id}`, with `pendingUserAction` now gone.
+
+The request body is a discriminated union on `action`, and nothing else is accepted:
+
+```ts
+type ActionBody =
+  | { action: "submit"; values: Record<string, unknown> }
+  | { action: "decline"; reason?: string };
+```
+
+`values` is required for `submit`, even if empty. A body that is neither shape gets `400`
+with the Zod issues attached.
+
+## Declining
+
+```bash
+curl -sX POST \
+  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{ "action": "decline", "reason": "buyer changed their mind" }'
+```
+
+Declining is a first-class outcome, not an error path. The run stops immediately, the
+checkout goes to `failed` with `failure.reason: "user_cancelled"`, and the browser is torn
+down. `reason` is optional, free text, and stored on the action for your own audit.
+
+Use it whenever you are asked for something you will not supply — a login you do not have,
+an OTP nobody can read, a price you do not like. Declining is much better than letting the
+action expire: same terminal outcome, ten minutes sooner, and the reason is recorded.
+
+## Expiry
+
+Actions default to a **10-minute** TTL, and `expiresAt` on the action is authoritative.
+
+When it passes:
+
+1. The orchestrator's wait times out.
+2. The action row is marked `expired`.
+3. The checkout fails with `failure.reason: "user_action_expired"`.
+4. The browser is torn down.
+
+There is no extension, no grace period, and no late answer. Submitting to an already-resolved
+action returns `409`:
+
+```json
+{ "error": true, "message": "Action already expired" }
+```
+
+The same `409` covers `Action already submitted` and `Action already declined` — which is
+also your idempotency signal. If a retry of your own submit returns `409 Action already
+submitted`, the first one landed; poll the checkout rather than treating it as a failure.
+
+An action is also marked `expired` when the checkout goes terminal for any other reason —
+you cancelled it, or the run died while the question was open. That is what guarantees a
+`succeeded`, `failed` or `cancelled` checkout never comes back still advertising a
+`pendingUserAction`. If your submit races a cancellation, expect the `409`.
+
+<Note>
+Ten minutes is chosen against the merchant, not against you. A parked browser holds a real
+merchant checkout session, and those expire on their own timetable — a longer window would
+mostly produce runs that resume onto a dead cart.
+</Note>
+
+## What happens to submitted values
+
+This is the part worth reading carefully before you put a card number in a `values` object.
+
+<Steps>
+  <Step title="A redacted copy is written to the action's audit record">
+    Field names matching card-shaped patterns — `card`, `cc-num`, `pan`, `cvc`, `cvv`,
+    `security code`, `expir` — are replaced with `"[redacted]"` before anything is stored.
+    Every other field is stored as sent.
+  </Step>
+  <Step title="The raw values go to a transient, delete-on-read store">
+    A separate table keyed by action id, with a short TTL of its own. This is the only place
+    raw values exist.
+  </Step>
+  <Step title="The resume event carries no values at all">
+    The orchestrator's event bus is a third-party system with durable event payloads and
+    durable step outputs. Values never enter it. The event carries the action id and the
+    outcome; the values are read inside the one step that types them.
+  </Step>
+  <Step title="The row is deleted once that step completes">
+    Not on read — a mid-flight retry would otherwise be stranded with nothing to type. It is
+    deleted after the step that used it succeeds, and a background sweep clears anything left
+    past its TTL regardless.
+  </Step>
+</Steps>
+
+<Warning>
+**Redaction is by field name, and only card-shaped names are covered.** A `credentials`
+action with a field called `password` stores that password in the action's audit record. If
+your merchant accounts matter, use throwaway or scoped credentials, and prefer
+[buyer sessions](/buyer-sessions) so a password is supplied once rather than every run.
+</Warning>
+
+Submitted values are never returned by any API endpoint. `pendingUserAction` disappears once
+resolved, and no endpoint exposes resolved actions or their values — the audit copy is
+internal.
+
+### Cards specifically
+
+Send single-use or agent-issued card numbers. The posture above is designed so that a
+database dump does not yield reusable PANs, and it holds — but "the raw number existed in a
+row for the duration of one checkout step" is a very different claim from "we are a card
+vault", and we are not making the second one.
+
+Values are also scrubbed on the way to the timeline: on the tier-2 path, agent tool inputs
+pass through a filter that masks both the exact values you submitted and anything
+PAN-shaped, so a card number typed through a generic "fill this field" tool cannot surface
+in `progressItems`.

@@ -1,0 +1,93 @@
+---
+title: "Usage"
+description: "Completed checkouts by day, and gross merchandise volume by currency."
+---
+
+## Get usage
+
+```http
+GET /v1/usage
+```
+
+Success: `200`.
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/usage?from=2026-07-01&to=2026-08-01" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+### Query
+
+<ParamField query="from" type="string" default="start of the current UTC month">
+  Any string `Date` can parse — `2026-07-01` or a full ISO timestamp. Inclusive.
+</ParamField>
+<ParamField query="to" type="string" default="now">
+  Same format. **Exclusive**, so `to=2026-08-01` covers July completely without bleeding into
+  August.
+</ParamField>
+
+The default window is the current calendar month, which is the unit tenants are billed in.
+
+### Response
+
+```json
+{
+  "from": "2026-07-01T00:00:00.000Z",
+  "to": "2026-08-01T00:00:00.000Z",
+  "completedCheckouts": 148,
+  "byDay": [
+    { "day": "2026-07-27", "count": 12 },
+    { "day": "2026-07-28", "count": 31 },
+    { "day": "2026-07-29", "count": 9 }
+  ],
+  "merchandiseVolume": [
+    { "currency": "USD", "amount": "4210.55" },
+    { "currency": "GBP", "amount": "318.00" }
+  ]
+}
+```
+
+<ResponseField name="from" type="string">The resolved window start, echoed as ISO 8601.</ResponseField>
+<ResponseField name="to" type="string">The resolved window end, exclusive.</ResponseField>
+
+<ResponseField name="completedCheckouts" type="integer">
+  **This is the billable number.** One per checkout that reached `succeeded`.
+</ResponseField>
+
+<ResponseField name="byDay" type="array">
+  `{ day, count }` with `day` as `YYYY-MM-DD` in UTC. Days with no completions are **omitted**,
+  not zero-filled — fill gaps yourself if you are drawing a chart.
+</ResponseField>
+
+<ResponseField name="merchandiseVolume" type="array">
+  `{ currency, amount }` — the sum of receipt totals, grouped by currency. Reporting only; we
+  bill per completed checkout, not a percentage. Currencies are never converted or combined.
+
+  Checkouts whose receipt carried no total are excluded from this sum but still counted in
+  `completedCheckouts`, so the two will not always reconcile.
+</ResponseField>
+
+### Errors
+
+| Status | Message |
+| --- | --- |
+| `400` | `Invalid from/to date` — a value `Date` could not parse |
+| `400` | `'from' must be before 'to'` — an inverted range is a caller bug, and answering it with a cheerful zero would hide that |
+
+## What is metered, and why
+
+We meter **completed** checkouts. Never attempts.
+
+Metering attempts would mean earning more when the agent fails, which is exactly backwards
+for a product whose entire problem is reliability. Billing on completion puts our revenue and
+your success on the same side.
+
+Practically: a checkout that ends `failed` or `cancelled` costs you nothing, however far it
+got and however many browser-minutes it burned. A run that reached the payment step and had
+its card action declined is free. Only an order that confirmed is billable.
+
+<Note>
+The usage record is written at the single point a checkout becomes successful, and is unique
+per checkout, so an orchestrator replay can never double-bill. Numbers here should reconcile
+exactly against your own count of `succeeded` checkouts.
+</Note>

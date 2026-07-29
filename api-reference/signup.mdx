@@ -1,0 +1,82 @@
+---
+title: "Signup"
+description: "Self-serve account creation. The one unauthenticated write on the API."
+---
+
+## Create a sandbox account
+
+```http
+POST /v1/signup
+```
+
+Success: `201`.
+
+No authentication. Returns a sandbox-only tenant and one `ck_test_` key.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/signup \
+  -H 'content-type: application/json' \
+  -d '{"name":"Acme Agents","email":"you@example.com"}'
+```
+
+### Body
+
+Both fields are optional; an empty body works.
+
+<ParamField body="name" type="string">
+  1–120 characters. Your organisation's name, for our records. Falls back to `email`, then to
+  `"sandbox tenant"`.
+</ParamField>
+
+<ParamField body="email" type="string">
+  A valid email, max 200 characters. How we reach you — not a login. There is no password and
+  no session; the API key is the only credential.
+</ParamField>
+
+### Response
+
+```json
+{
+  "tenantId": "6f0f2f39-8a34-4a8f-9a1a-1d0f4b9a2c77",
+  "name": "Acme Agents",
+  "sandboxOnly": true,
+  "sandboxMerchants": ["your-sandbox-store.myshopify.com"],
+  "apiKey": "ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
+}
+```
+
+<ResponseField name="tenantId" type="string">
+  Your tenant UUID. Everything you create is scoped to it.
+</ResponseField>
+<ResponseField name="sandboxOnly" type="boolean">
+  Always `true` for a self-serve signup. See [Sandbox](/sandbox).
+</ResponseField>
+<ResponseField name="sandboxMerchants" type="string[]">
+  The hosts you may target. Read this rather than hard-coding it.
+</ResponseField>
+<ResponseField name="apiKey" type="string">
+  Shown once. Only a SHA-256 hash is stored — nothing can recover it.
+</ResponseField>
+
+<Warning>
+Save `apiKey` immediately. If you lose it before making any other call, you have no way to
+authenticate and no way to recover the tenant — sign up again.
+</Warning>
+
+### Errors
+
+| Status | Message | Cause |
+| --- | --- | --- |
+| `400` | `Invalid request` (with `issues`) | `name` or `email` failed validation. |
+| `403` | `Self-serve signup is closed` | Signup is disabled platform-wide. |
+| `429` | `Too many signups from this address. Try again later.` | More than 3 from one IP in an hour. |
+| `429` | `Signups are temporarily paused. Get in touch.` | More than 200 platform-wide in 24 hours. |
+
+## Why this can be open
+
+A signup produces a real, working key that drives the entire product — a real browser, a
+real merchant storefront, a real variant prompt, real card entry, a genuinely placed order.
+
+It is safe to leave open because the tenant it creates is confined to merchants we control.
+Every other guardrail limits how much money moves; sandbox is the one that decides whether
+real money is reachable at all. See [Sandbox](/sandbox).

@@ -1,0 +1,390 @@
+---
+title: "Checkouts"
+description: "Create, list, get, cancel, and mint a live-view token."
+---
+
+## Create a checkout
+
+```http
+POST /v1/checkouts
+```
+
+Success: `201`.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "target": {
+      "url": "https://example-store.com/products/widget",
+      "request": "buy this in medium, cheapest delivery",
+      "merchantContext": "The size selector is under the price, not in the sidebar.",
+      "allowedDomains": ["auth.example-store.com"],
+      "countryCode": "US"
+    },
+    "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+    "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+    "metadata": { "orderRef": "acme-4412" }
+  }'
+```
+
+### Body
+
+<ParamField body="target" type="object" required>
+  <Expandable title="target">
+    <ParamField body="url" type="string" required>
+      The page to start from. Must be a valid absolute URL. Typically a product page; on
+      tier 2 a category or home page also works if the `request` says what to find.
+    </ParamField>
+    <ParamField body="kind" type="string" default="direct_url">
+      Only `"direct_url"` exists. Omit it.
+    </ParamField>
+    <ParamField body="request" type="string">
+      Plain English. What to buy, which variant, which shipping. `"buy this in medium,
+      cheapest delivery"`. Omitted, the agent's goal is simply "complete the purchase" —
+      which usually means it has to ask you which variant.
+
+      On the Shopify tier this is also how the variant prompt is avoided: option values are
+      matched as whole words, and one unambiguous winner skips the question.
+    </ParamField>
+    <ParamField body="merchantContext" type="string">
+      Up to 4000 characters of hints about this specific merchant, passed to the tier-2
+      agent as guidance. Use it for a store whose checkout you already know is unusual.
+    </ParamField>
+    <ParamField body="allowedDomains" type="string[]">
+      Extra hostnames the run may navigate to, beyond the target's own registrable domain
+      and its subdomains. Max 10, hostnames only — no scheme, no path.
+
+      This exists for merchants whose login lives on a separate identity origin. It is
+      declared here, at creation time, before any untrusted page content exists — page text
+      can never grow it at runtime.
+    </ParamField>
+    <ParamField body="countryCode" type="string">
+      ISO 3166-1 alpha-2. Selects the network exit so the merchant sees a local visitor.
+      Inferred from the URL's ccTLD when omitted.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="buyerProfileId" type="string">
+  UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to
+  your tenant or you get `400 buyerProfileId not found`.
+
+  Without one the agent has no address or email, and most checkouts cannot be completed.
+</ParamField>
+
+<ParamField body="constraints" type="object" default="{}">
+  <Expandable title="constraints">
+    <ParamField body="maxCost" type="object">
+      `{ "amount": "60.00", "currency": "USD" }`. `amount` is a decimal string; `currency`
+      defaults to `"USD"`. See [maxCost enforcement](/errors-and-limits#maxcost-enforcement).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="metadata" type="object" default="{}">
+  Arbitrary JSON, stored and echoed back on every read. Never sent to the merchant, never
+  interpreted by us, not searchable. Use it to carry your own order reference.
+</ParamField>
+
+### Response
+
+`201` with the full checkout object, in status `queued`, already carrying the
+`intent_started` progress item.
+
+```json
+{
+  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "queued",
+  "target": {
+    "kind": "direct_url",
+    "url": "https://example-store.com/products/widget",
+    "request": "buy this in medium, cheapest delivery",
+    "countryCode": "US"
+  },
+  "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
+  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "metadata": { "orderRef": "acme-4412" },
+  "progressItems": [
+    { "kind": "intent_started", "label": "Started checkout", "data": {}, "at": "2026-07-29T09:14:31.203Z", "sequence": 1 }
+  ],
+  "createdAt": "2026-07-29T09:14:31.190Z",
+  "updatedAt": "2026-07-29T09:14:31.190Z"
+}
+```
+
+### Errors
+
+| Status | Message |
+| --- | --- |
+| `400` | `Invalid request` (with `issues`), `buyerProfileId not found` |
+| `403` | Sandbox confinement — the account is sandbox-only, or the request used a `ck_test_` key. Body carries `sandboxMerchants`. See [Sandbox](/sandbox). |
+| `429` | `Active checkout limit reached (5). …`, `Daily checkout limit reached (200 per 24h).` |
+
+```json 403
+{
+  "error": true,
+  "message": "Cannot check out at example-store.com: This request used a test key. Use a live key to check out at real merchants. Sandbox merchants: your-sandbox-store.myshopify.com.",
+  "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
+}
+```
+
+Confinement is checked against `target.allowedDomains` as well as `target.url` — the
+offending host named in the message may be either.
+
+---
+
+## Get a checkout
+
+```http
+GET /v1/checkouts/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+This is the object you poll, and it is the same shape returned by create and by submitting an
+action.
+
+<ResponseField name="id" type="string" required>UUID.</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  `queued` · `running` · `awaiting_user_action` · `succeeded` · `failed` · `cancelled`.
+</ResponseField>
+
+<ResponseField name="target" type="object" required>
+  Exactly what you sent, plus `kind: "direct_url"`.
+</ResponseField>
+
+<ResponseField name="constraints" type="object" required>
+  `{}` if you sent none.
+</ResponseField>
+
+<ResponseField name="buyerProfileId" type="string">
+  **Omitted** when the checkout has no buyer profile.
+</ResponseField>
+
+<ResponseField name="metadata" type="object" required>
+  `{}` if you sent none.
+</ResponseField>
+
+<ResponseField name="browser" type="object">
+  **Omitted** until a browser session exists.
+
+  ```json
+  { "embedTokenUrl": "/v1/checkouts/{id}/embed-token", "permissions": ["read"] }
+  ```
+
+  <Note>
+  Its presence means "a browser exists and there is something to watch". `embedTokenUrl`
+  points at the endpoint that mints a viewable URL; it is not viewable itself.
+  </Note>
+</ResponseField>
+
+<ResponseField name="progressItems" type="array" required>
+  Every event so far, ordered by `sequence` ascending. Each item is
+  `{ kind, label, data, at, sequence }`. See
+  [the timeline](/checkout-lifecycle#the-progressitems-timeline).
+</ResponseField>
+
+<ResponseField name="pendingUserAction" type="object">
+  **Omitted** unless an action is pending right now.
+
+  ```json
+  {
+    "id": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+    "message": "Enter a single-use / agent card to complete this purchase.",
+    "key": "card",
+    "responseSchema": { "type": "object", "additionalProperties": false, "required": ["card_number", "card_expiry", "card_cvc"], "properties": { "card_number": { "type": "string", "title": "Card number", "minLength": 1, "description": "Single-use / agent card number for this purchase." }, "card_expiry": { "type": "string", "title": "Expiration date (MM / YY)", "minLength": 1 }, "card_cvc": { "type": "string", "title": "Security code", "minLength": 1 } } },
+    "expiresAt": "2026-07-29T09:24:45.612Z"
+  }
+  ```
+
+  Always absent on a terminal checkout — cancelling or failing a run expires any question
+  still open, so `succeeded`, `failed` and `cancelled` never advertise a pending action.
+
+  See [User actions](/user-actions).
+</ResponseField>
+
+<ResponseField name="failure" type="object">
+  **Omitted** unless the run failed. `{ "reason": "automation_failed" }` — one of
+  `max_cost_exceeded`, `user_cancelled`, `user_action_expired`, `automation_failed`. The
+  detail message is on the final `terminal` progress item, not here.
+</ResponseField>
+
+<ResponseField name="receipt" type="object">
+  **Omitted** unless `status` is `succeeded`.
+
+  ```json
+  {
+    "total": { "amount": "42.10", "currency": "USD" },
+    "merchantOrderId": "1042",
+    "evidence": { "url": "https://example-store.com/checkouts/c/abc123/thank_you" }
+  }
+  ```
+
+  `total` and `merchantOrderId` may be `null`. See
+  [the receipt](/checkout-lifecycle#the-receipt).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>ISO 8601.</ResponseField>
+<ResponseField name="updatedAt" type="string" required>ISO 8601.</ResponseField>
+
+### Errors
+
+`404 Checkout not found` — including when it belongs to another tenant.
+
+---
+
+## List checkouts
+
+```http
+GET /v1/checkouts
+```
+
+Success: `200`.
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&limit=20" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+### Query
+
+<ParamField query="limit" type="integer" default="20">
+  An integer from 1 to 100. Anything else is a `400`.
+</ParamField>
+<ParamField query="cursor" type="string">
+  The `nextCursor` from the previous page — an ISO timestamp. Returns checkouts created
+  strictly before it. A value that is not a timestamp is a `400`.
+</ParamField>
+<ParamField query="status" type="string">
+  Filter to one status. An unrecognised value returns `400 Unknown status 'x'`.
+</ParamField>
+
+### Response
+
+Deliberately a **summary**, not the full object. The full shape carries the entire event
+timeline, which is exactly what a list view must not fetch.
+
+```json
+{
+  "data": [
+    {
+      "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+      "status": "awaiting_user_action",
+      "url": "https://example-store.com/products/widget",
+      "request": "buy this in medium, cheapest delivery",
+      "pendingUserActionId": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
+      "createdAt": "2026-07-29T09:14:31.190Z",
+      "updatedAt": "2026-07-29T09:14:45.622Z"
+    },
+    {
+      "id": "0c9d8e7f-6a5b-4c3d-9e2f-112233445566",
+      "status": "succeeded",
+      "url": "https://example-store.com/products/gadget",
+      "request": "buy one",
+      "receipt": { "total": { "amount": "18.00", "currency": "USD" }, "merchantOrderId": "1041" },
+      "createdAt": "2026-07-28T16:02:11.004Z",
+      "updatedAt": "2026-07-28T16:09:44.881Z"
+    },
+    {
+      "id": "aa11bb22-cc33-4d44-8e55-66f7788990aa",
+      "status": "failed",
+      "url": "https://example-store.com/products/thing",
+      "request": null,
+      "failure": { "reason": "user_action_expired" },
+      "createdAt": "2026-07-28T11:20:00.117Z",
+      "updatedAt": "2026-07-28T11:31:06.402Z"
+    }
+  ],
+  "nextCursor": "2026-07-28T11:20:00.117Z"
+}
+```
+
+<ResponseField name="url" type="string | null">Lifted from `target.url`.</ResponseField>
+<ResponseField name="request" type="string | null">Lifted from `target.request`.</ResponseField>
+<ResponseField name="failure" type="object">Omitted unless failed.</ResponseField>
+<ResponseField name="receipt" type="object">
+  Omitted unless a receipt exists. Note this is the **short** form — `{ total,
+  merchantOrderId }` with no `evidence`.
+</ResponseField>
+<ResponseField name="pendingUserActionId" type="string">
+  Omitted unless an action is pending. The id only — fetch the checkout for the message and
+  schema.
+</ResponseField>
+<ResponseField name="nextCursor" type="string | null">
+  Pass back as `?cursor=`. `null` on the last page.
+</ResponseField>
+
+---
+
+## Cancel a checkout
+
+```http
+DELETE /v1/checkouts/{id}
+```
+
+Success: `202`.
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+Returns `202` with an **empty body**.
+
+Cancellation is asynchronous. It stops the run even while it is parked on a user action,
+flips the row to `cancelled`, and reclaims the browser. Poll, or wait for the
+`checkout.status_changed` webhook, to observe the terminal state.
+
+A `DELETE` on an already-terminal checkout also returns `202` and does nothing. The `202`
+acknowledges the request, it does not assert an outcome.
+
+`404 Checkout not found` if it does not exist or is not yours.
+
+<Warning>
+Not an undo. If the pay click has already landed, cancelling stops our automation but does
+not unwind an order the merchant has accepted.
+</Warning>
+
+---
+
+## Mint a live-view token
+
+```http
+POST /v1/checkouts/{id}/embed-token
+```
+
+Success: `200`.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
+  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "expiresAt": "2026-07-29T09:24:45.000Z"
+}
+```
+
+<ResponseField name="token" type="string">
+  HS256 JWT pinned to this checkout id, valid 10 minutes.
+</ResponseField>
+<ResponseField name="url" type="string">
+  Ready to drop into an `<iframe src>`. Contains the token.
+</ResponseField>
+<ResponseField name="expiresAt" type="string">
+  ISO 8601. No refresh — mint a new token when it lapses.
+</ResponseField>
+
+Body is ignored; no parameters. `404 Checkout not found` if it is not yours. See
+[Live view](/live-view).

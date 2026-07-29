@@ -1,0 +1,112 @@
+---
+title: "Introduction"
+description: "What Checkoutvia does, what it does not do, and the shape of the integration."
+---
+
+Checkoutvia buys things on the open web on a user's behalf.
+
+You give it a URL and a sentence:
+
+```json
+{
+  "target": {
+    "url": "https://example-store.com/products/widget",
+    "request": "buy this in medium, cheapest delivery"
+  }
+}
+```
+
+Behind that call a real Chromium browser opens the page, works out how the merchant's
+checkout is put together, fills in contact and shipping details from a buyer profile you
+stored earlier, picks the cheapest shipping option, and reaches the payment step. When it
+hits something only a human can answer — which size, what card, a login, a one-time code —
+it stops, tells you exactly what it needs and in what shape, and waits. You answer over the
+same API and the run picks up where it left off.
+
+There is no merchant integration. Nothing has to be Stripe-enabled or protocol-compliant on
+the other end. If a person with a browser could buy it, the agent works against the same
+page they would.
+
+## The integration in four calls
+
+<Steps>
+  <Step title="Create a checkout">
+    `POST /v1/checkouts` returns immediately with a `queued` checkout and an id. The work
+    happens asynchronously in a durable orchestrator, so a client crash or a network blip
+    never orphans a half-finished purchase.
+  </Step>
+  <Step title="Poll it (or take a webhook)">
+    `GET /v1/checkouts/{id}` returns the whole current state: status, an append-only
+    `progressItems` timeline of everything the agent has done, and — if the run is blocked —
+    a `pendingUserAction`. Register a webhook endpoint if you would rather be pushed status
+    transitions than poll for them.
+  </Step>
+  <Step title="Answer what it asks">
+    Each `pendingUserAction` carries a `responseSchema` — a real JSON Schema describing the
+    fields to collect. `POST /v1/checkouts/{id}/actions/{actionId}` with `submit` and the
+    values, or `decline` to abandon the purchase.
+  </Step>
+  <Step title="Read the receipt">
+    A `succeeded` checkout carries a `receipt` with the merchant's order id, the total
+    charged, and the confirmation URL the agent saw.
+  </Step>
+</Steps>
+
+## Two engines, chosen per run
+
+The tier is decided once, at the start of a run, by probing the live page, and then pinned
+for the rest of the run.
+
+<CardGroup cols={2}>
+  <Card title="Tier 1 — Shopify" icon="bolt">
+    Deterministic. No model in the loop. Shopify's storefront exposes structured product
+    JSON, so the variant is resolved from data rather than guessed, and the checkout is
+    walked with known field patterns. Fastest, cheapest, most reliable — and it covers a
+    large share of the merchants agentic commerce actually targets.
+  </Card>
+  <Card title="Tier 2 — general DOM agent" icon="compass">
+    Everything else. Claude picks one action per turn over a numbered map of the page's
+    interactive elements. No screenshots: form-driven checkouts do not need vision, and
+    text is far cheaper per turn.
+  </Card>
+</CardGroup>
+
+Which tier ran is visible in the timeline, not as a field you configure. You do not choose
+it and you should not need to care, beyond knowing that Shopify stores are the well-trodden
+path.
+
+## What we will not do
+
+These are deliberate refusals, not gaps.
+
+- **We never place an order without a card the user supplied for this purchase.** Payment
+  is the one irreversible step, and it is handled by deterministic code, never improvised
+  by the model. The agent physically cannot see card fields — they live in cross-origin
+  iframes outside its DOM map.
+- **We never invent credentials or create accounts.** A login wall becomes a `credentials`
+  user action, not a guess.
+- **We never tick a marketing opt-in.** Not "we prompt the model not to" — the click is
+  refused in code unless we can positively see the box is already ticked and we would be
+  unticking it. Consent is the buyer's to give.
+- **We never leave the merchant's own domains.** Page text is untrusted input. A page that
+  says "checkout has moved to another-site.example" cannot steer a session holding buyer
+  PII anywhere. The allowed origin set is fixed before the run starts and cannot grow at
+  runtime.
+- **We never retain raw card values.** They go to a transient, delete-on-read store, are
+  consumed by the one step that types them, and are deleted. Only a redacted copy survives
+  as an audit trail.
+
+## What this is not
+
+Checkoutvia is not a price comparison engine, a product search API, or a cart aggregator.
+It does not know what things cost until it loads the page. It takes a URL you already have
+and turns it into a completed order.
+
+It is also not instantaneous. A real browser has to load real pages over a real network,
+and food-delivery flows are structurally longer than retail ones. Budget minutes, not
+milliseconds, and build your UI around the `progressItems` stream rather than a spinner.
+
+<Card title="Start here" icon="rocket" href="/quickstart">
+  Sign up, create a checkout, and answer a variant and a card action — end to end, with
+  curl and TypeScript.
+</Card>

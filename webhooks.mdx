@@ -1,0 +1,249 @@
+---
+title: "Webhooks"
+description: "Push delivery of checkout status transitions, the signature scheme, and the ordering and replay caveats you have to design around."
+---
+
+Polling works and is the simplest thing that can possibly work. But a checkout can sit
+parked on a user action for ten minutes, and polling a run that is doing nothing is pure
+waste — so status transitions can also be pushed to you.
+
+Webhooks tell you **that** something changed. They deliberately do not carry the checkout
+object: the payload is small and cheap to sign, and you fetch the current state yourself. A
+webhook is a doorbell, not a delivery.
+
+## Registering an endpoint
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/webhooks \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+```
+
+```json Response (201)
+{
+  "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+  "url": "https://hooks.example.com/checkoutvia",
+  "label": "prod",
+  "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
+}
+```
+
+<Warning>
+`secret` is returned exactly once, here. Store it before you close the terminal — it is what
+you verify every future delivery with.
+</Warning>
+
+`url` must be `https://`. `http://localhost` and `http://127.0.0.1` are accepted so you can
+develop against a local listener; nothing else over plain HTTP is.
+
+Multiple endpoints per tenant are supported and each gets its own secret. Delivery is
+per-endpoint, so a broken endpoint retries without re-delivering to the healthy ones.
+
+<CodeGroup>
+```bash List
+curl -s https://api.checkoutvia.com/v1/webhooks \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```bash Revoke
+curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+</CodeGroup>
+
+```json List → 200
+{
+  "endpoints": [
+    {
+      "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+      "url": "https://hooks.example.com/checkoutvia",
+      "label": "prod",
+      "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
+      "lastDeliveryStatus": 200,
+      "createdAt": "2026-07-28T14:03:55.204Z"
+    }
+  ]
+}
+```
+
+`lastDeliveryStatus` is the raw HTTP status your endpoint last returned. It is the fastest
+way to notice you have been 500ing for a day. Revoked endpoints disappear from the list and
+stop receiving deliveries immediately.
+
+## The event
+
+One event type exists today.
+
+```json
+{
+  "type": "checkout.status_changed",
+  "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+  "status": "awaiting_user_action",
+  "failureReason": null,
+  "createdAt": "2026-07-29T09:14:45.622Z"
+}
+```
+
+<ResponseField name="type" type="string">
+  Always `"checkout.status_changed"`. Switch on it anyway — more types will come and your
+  handler should ignore what it does not recognise.
+</ResponseField>
+<ResponseField name="checkoutId" type="string">
+  Fetch `GET /v1/checkouts/{checkoutId}` for the actual state.
+</ResponseField>
+<ResponseField name="status" type="string">
+  The status the checkout just moved to.
+</ResponseField>
+<ResponseField name="failureReason" type="string | null">
+  Set only when `status` is `failed`. One of `max_cost_exceeded`, `user_cancelled`,
+  `user_action_expired`, `automation_failed`.
+</ResponseField>
+<ResponseField name="createdAt" type="string">
+  When the transition was dispatched — stamped once, so a retried delivery carries the
+  original event time, not the retry time.
+</ResponseField>
+
+### Which transitions fire
+
+| Status | Fires? |
+| --- | --- |
+| `queued` | **No.** Creation is synchronous — you already have the object from the `201`. |
+| `running` | Yes, when the browser session comes up. |
+| `awaiting_user_action` | Yes, on every action raised. |
+| `succeeded` | Yes. |
+| `failed` | Yes. |
+| `cancelled` | Yes. |
+
+A checkout that asks two questions produces **two** `awaiting_user_action` events with
+nothing in between, because there is no transition back to `running` after you answer an
+action. See [the wart](/checkout-lifecycle#a-wart-worth-knowing).
+
+Delivery is best-effort by design: a webhook must never fail or slow down a checkout
+transition. Fan-out is enqueued and never awaited on the checkout's critical path. If your
+endpoint is down for the whole retry window, the transition still happened — polling is
+always the source of truth.
+
+## Verifying the signature
+
+Every delivery carries `x-checkoutvia-signature` in the Stripe style:
+
+```
+x-checkoutvia-signature: t=1785317685,v1=9f8b1d3c...e7
+```
+
+`v1` is `HMAC-SHA256(secret, "<t>.<raw body>")`, hex-encoded. Sign against the **raw request
+body bytes**, before any JSON parse — re-serializing the parsed object will change key order
+or whitespace and the HMAC will not match.
+
+```js verify.js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+/**
+ * @param {string} secret  the whsec_… value from endpoint creation
+ * @param {string} body    the raw request body, exactly as received
+ * @param {string} header  the x-checkoutvia-signature header value
+ */
+export function verifyWebhookSignature(secret, body, header, toleranceSec = 300) {
+  const t = /(?:^|,)t=(\d+)/.exec(header)?.[1];
+  const v1 = /(?:^|,)v1=([a-f0-9]+)/.exec(header)?.[1];
+  if (!t || !v1) return false;
+  // Reject stale timestamps so a captured delivery can't be replayed indefinitely.
+  if (Math.abs(Date.now() / 1000 - Number(t)) > toleranceSec) return false;
+  const expected = createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(v1, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+```
+
+Wired into Express, with the raw body preserved:
+
+```js server.js
+import express from "express";
+import { verifyWebhookSignature } from "./verify.js";
+
+const app = express();
+const SECRET = process.env.CKV_WEBHOOK_SECRET;
+
+app.post(
+  "/checkoutvia",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const raw = req.body.toString("utf8");
+    const header = req.get("x-checkoutvia-signature") ?? "";
+    if (!verifyWebhookSignature(SECRET, raw, header)) {
+      return res.status(400).send("bad signature");
+    }
+
+    const event = JSON.parse(raw);
+    // Acknowledge fast, then do the work out of band. We give you 10 seconds.
+    res.status(200).end();
+    void handle(event);
+  },
+);
+
+async function handle(event) {
+  if (event.type !== "checkout.status_changed") return;
+  const checkout = await fetchCheckout(event.checkoutId); // GET /v1/checkouts/{id}
+  // ... your logic
+}
+```
+
+## Delivery behaviour
+
+<ResponseField name="Timeout" type="10 seconds">
+  A delivery that has not responded in 10 seconds is aborted and treated as a failure.
+  Return `2xx` immediately and process asynchronously.
+</ResponseField>
+
+<ResponseField name="Retries" type="3">
+  A non-`2xx` response or a connection failure is retried by the durable dispatcher, with
+  backoff. Retries are per-endpoint: a delivery that already succeeded is never repeated
+  because a sibling endpoint failed.
+</ResponseField>
+
+<ResponseField name="Success" type="any 2xx">
+  Anything outside `2xx` counts as a failure and is retried. `410 Gone` will not
+  auto-disable your endpoint — revoke it explicitly.
+</ResponseField>
+
+## Caveats you must design around
+
+<AccordionGroup>
+  <Accordion title="No ordering guarantee">
+    Each transition is dispatched as its own event and retried independently. A retried
+    `running` can arrive after `succeeded`.
+
+    Never reconstruct state by replaying the sequence of webhooks. Use the event as a
+    trigger, fetch `GET /v1/checkouts/{id}`, and act on what that returns. `createdAt` gives
+    you a dispatch time you can compare if you need to discard an obviously stale event.
+  </Accordion>
+
+  <Accordion title="No event id, no idempotency key">
+    The payload has no unique event identifier. A retry is byte-identical to the original
+    delivery, so you cannot dedupe on the body alone.
+
+    Make your handler idempotent against `(checkoutId, status)` instead, or simply make it
+    idempotent against the fetched checkout's current state — which is the right design
+    anyway given the ordering caveat.
+  </Accordion>
+
+  <Accordion title="Duplicate deliveries are normal">
+    Two consecutive `awaiting_user_action` events for one checkout are expected behaviour,
+    not a bug — see above. And a delivery your endpoint processed but timed out on will be
+    retried.
+  </Accordion>
+
+  <Accordion title="The event does not name the action">
+    An `awaiting_user_action` event tells you a question exists, not what it is. Fetch the
+    checkout and read `pendingUserAction`.
+  </Accordion>
+
+  <Accordion title="Secrets are shown once and cannot be rotated in place">
+    There is no rotate endpoint. To rotate: register a second endpoint at the same URL,
+    accept either secret during the overlap, then revoke the first. Deliveries go to every
+    active endpoint, so during the overlap you receive each event twice — which your
+    idempotent handler already tolerates.
+  </Accordion>
+</AccordionGroup>

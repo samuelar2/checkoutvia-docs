@@ -1,0 +1,176 @@
+---
+title: "Buyer profiles"
+description: "Create, get and list reusable identity and shipping details."
+---
+
+Concepts and field guidance in [Buyer profiles](/buyer-profiles).
+
+## Create
+
+```http
+POST /v1/buyer-profiles
+```
+
+Success: `201`.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "label": "ada-home",
+    "name": { "first": "Ada", "last": "Lovelace" },
+    "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+    "shipping": {
+      "addressLines": ["1 Analytical Way"],
+      "locality": "Louisville",
+      "administrativeAreaCode": "KY",
+      "postalCode": "40202",
+      "countryCode": "US"
+    }
+  }'
+```
+
+### Body
+
+Every field is optional — `{}` is a valid profile — but the agent can only fill what you gave
+it.
+
+<ParamField body="label" type="string">
+  Yours, for bookkeeping. Never sent to a merchant.
+</ParamField>
+
+<ParamField body="name" type="object">
+  <Expandable title="name">
+    <ParamField body="first" type="string" />
+    <ParamField body="last" type="string" />
+  </Expandable>
+  Also used as the cardholder name at the payment step, which is why the card action never
+  asks for one.
+</ParamField>
+
+<ParamField body="contact" type="object">
+  <Expandable title="contact">
+    <ParamField body="email" type="string">
+      Where the merchant's order confirmation goes. Most checkouts refuse to proceed without
+      it.
+    </ParamField>
+    <ParamField body="phone" type="string">
+      Required by a fair number of merchants, particularly delivery.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="shipping" type="object">
+  <Expandable title="shipping">
+    <ParamField body="addressLines" type="string[]">
+      Only the **first** line is filled on the Shopify tier. Put an apartment number on line
+      one if it matters.
+    </ParamField>
+    <ParamField body="locality" type="string">City / town.</ParamField>
+    <ParamField body="administrativeAreaCode" type="string">
+      State / province. Send the short code (`KY`, `ON`); the code is tried first, then the
+      full name as a visible label. Effectively required for US and CA — Shopify offers no
+      shipping method without it.
+    </ParamField>
+    <ParamField body="postalCode" type="string" />
+    <ParamField body="countryCode" type="string">
+      ISO 3166-1 alpha-2. Filled before the state, since changing country repopulates the
+      province list.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+No validation beyond types. No normalisation, no address correction — values are stored and
+typed exactly as sent.
+
+### Response
+
+```json
+{
+  "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "label": "ada-home",
+  "name": { "first": "Ada", "last": "Lovelace" },
+  "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+  "shipping": {
+    "addressLines": ["1 Analytical Way"],
+    "locality": "Louisville",
+    "administrativeAreaCode": "KY",
+    "postalCode": "40202",
+    "countryCode": "US"
+  },
+  "createdAt": "2026-07-29T09:12:04.881Z"
+}
+```
+
+Omitted sub-objects come back as `null`, not as `{}`.
+
+`400 Invalid profile` with `issues` on a type mismatch.
+
+---
+
+## Get one
+
+```http
+GET /v1/buyer-profiles/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+Same object as create. `404 Profile not found` if it does not exist or is not yours.
+
+---
+
+## List
+
+```http
+GET /v1/buyer-profiles
+```
+
+Success: `200`.
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+<ParamField query="limit" type="integer" default="20">
+  Caps at 100. Send an integer.
+</ParamField>
+<ParamField query="cursor" type="string">
+  The previous page's `nextCursor` — an ISO timestamp. Returns profiles created strictly
+  before it.
+</ParamField>
+
+```json
+{
+  "data": [
+    {
+      "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+      "label": "ada-home",
+      "name": { "first": "Ada", "last": "Lovelace" },
+      "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+      "shipping": { "addressLines": ["1 Analytical Way"], "locality": "Louisville", "administrativeAreaCode": "KY", "postalCode": "40202", "countryCode": "US" },
+      "createdAt": "2026-07-29T09:12:04.881Z"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+Newest first. `nextCursor: null` means the last page.
+
+---
+
+## No update, no delete
+
+There is no `PATCH` and no `DELETE`. Create a new profile to change an address; the old one
+stays, so past checkouts keep showing the address the order actually went to.
+
+If you need a deletion path for a buyer's data, get in touch — this is on the list. See
+[Known gaps](/errors-and-limits#known-gaps).

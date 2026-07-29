@@ -1,0 +1,25 @@
+# Mintlify CLI
+.mintlify/
+.mint/
+mint.log
+
+# Node (the CLI is run via npx; nothing here should be committed)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Env — nothing in this repo needs secrets. If a file like this appears, it is a mistake.
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

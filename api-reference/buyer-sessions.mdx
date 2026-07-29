@@ -1,0 +1,98 @@
+---
+title: "Buyer sessions"
+description: "List and revoke stored merchant login sessions."
+---
+
+Read and delete only. Sessions are created as a side effect of a checkout run that logged in
+— there is no `POST`. Concepts in [Buyer sessions](/buyer-sessions).
+
+## List
+
+```http
+GET /v1/buyer-sessions
+```
+
+Success: `200`.
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+<ParamField query="buyerProfileId" type="string">
+  Optional. Omit to list every session for the tenant.
+</ParamField>
+
+Not paginated. Ordered by `updatedAt` descending.
+
+```json
+{
+  "sessions": [
+    {
+      "id": "e21f9a4c-8d16-4b7e-9c05-3a7f61b2d8e4",
+      "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+      "merchantDomain": "example-store.com",
+      "createdAt": "2026-07-21T18:44:02.117Z",
+      "updatedAt": "2026-07-29T09:26:29.702Z",
+      "lastUsedAt": "2026-07-29T09:14:39.500Z"
+    }
+  ],
+  "vaultEnabled": true
+}
+```
+
+<ResponseField name="sessions" type="array">
+  Metadata only. No endpoint returns the cookie blob.
+</ResponseField>
+<ResponseField name="merchantDomain" type="string">
+  The registrable domain the session belongs to. Sessions are keyed on
+  `(tenant, buyerProfileId, merchantDomain)` — one per merchant per profile.
+</ResponseField>
+<ResponseField name="lastUsedAt" type="string | null">
+  Stamped when a session is loaded into a run. `null` if it has been stored but never reused.
+</ResponseField>
+<ResponseField name="vaultEnabled" type="boolean">
+  `false` means session storage is not configured on this deployment. `sessions` is then
+  always `[]` and runs proceed logged out. Check this before building UI around the feature.
+</ResponseField>
+
+---
+
+## Revoke
+
+```http
+DELETE /v1/buyer-sessions/{id}
+```
+
+Success: `200`.
+
+```bash
+curl -sX DELETE https://api.checkoutvia.com/v1/buyer-sessions/$SESSION_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```json
+{ "deleted": true }
+```
+
+A hard delete, not a revocation timestamp — the row *is* the credential, so the right thing
+to do with it is destroy it.
+
+`404 Session not found` if it does not exist or belongs to another tenant.
+
+<Warning>
+This stops **us** using the session. It does not sign the buyer out at the merchant. If a
+session may have been misused, delete it here **and** end it from the merchant's own account
+security page.
+</Warning>
+
+---
+
+## No create endpoint
+
+Sessions come into existence only through a checkout run: a `credentials`
+[user action](/user-actions) logs in, and the resulting cookies are captured immediately
+afterwards while the browser is still warm.
+
+There is no way to upload cookies directly, and that is deliberate — the vault stores what a
+login it supervised produced, scoped to that merchant's domains, and nothing else.

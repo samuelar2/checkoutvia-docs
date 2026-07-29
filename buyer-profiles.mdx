@@ -1,0 +1,151 @@
+---
+title: "Buyer profiles"
+description: "Reusable identity and shipping details. Create once, reference by id on every checkout."
+---
+
+A buyer profile is the answer to "who is this order for and where does it go". The agent
+reads it when it reaches the merchant's contact and shipping form, so you supply it once
+instead of re-typing an address into every checkout.
+
+Pass `buyerProfileId` when creating a checkout. Without one the agent has no address, and on
+most merchants that is where the run stops.
+
+## Create
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "label": "ada-home",
+    "name": { "first": "Ada", "last": "Lovelace" },
+    "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+    "shipping": {
+      "addressLines": ["1 Analytical Way", "Apt 4"],
+      "locality": "Louisville",
+      "administrativeAreaCode": "KY",
+      "postalCode": "40202",
+      "countryCode": "US"
+    }
+  }'
+```
+
+```json Response (201)
+{
+  "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+  "label": "ada-home",
+  "name": { "first": "Ada", "last": "Lovelace" },
+  "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+  "shipping": {
+    "addressLines": ["1 Analytical Way", "Apt 4"],
+    "locality": "Louisville",
+    "administrativeAreaCode": "KY",
+    "postalCode": "40202",
+    "countryCode": "US"
+  },
+  "createdAt": "2026-07-29T09:12:04.881Z"
+}
+```
+
+## Fields
+
+Every field is optional — the API will happily store `{}` — but the agent can only fill what
+you gave it.
+
+<ResponseField name="label" type="string">
+  Yours, for your own bookkeeping. Never sent to a merchant.
+</ResponseField>
+
+<ResponseField name="name" type="object">
+  `{ first, last }`. Used for the merchant's name fields, and as the cardholder name at the
+  payment step — which is why the card action never asks for one.
+</ResponseField>
+
+<ResponseField name="contact" type="object">
+  `{ email, phone }`. `email` is what order confirmations go to; most checkouts refuse to
+  proceed without it. `phone` is required by a fair number of merchants, particularly
+  delivery.
+</ResponseField>
+
+<ResponseField name="shipping" type="object">
+  `{ addressLines, locality, administrativeAreaCode, postalCode, countryCode }`.
+
+  - `addressLines` — array of strings. **Only the first line is filled** on the Shopify
+    tier; a second line is stored but will not be typed. If an apartment number matters, put
+    it on line one.
+  - `locality` — city / town.
+  - `administrativeAreaCode` — state / province. Send the short code (`KY`, `ON`) — the code
+    is tried first, then the full name as a visible label.
+  - `postalCode`
+  - `countryCode` — ISO 3166-1 alpha-2. Filled before the state, because changing country
+    repopulates the province list and would wipe a state chosen first.
+</ResponseField>
+
+<Warning>
+For US and CA addresses, `administrativeAreaCode` is effectively required. Shopify will not
+offer a shipping method until the state or province is set, and with no shipping method the
+order can never be placed — the run fails with `Could not reach the payment step` and the
+real cause is three steps upstream.
+</Warning>
+
+Values are stored as sent. No normalisation, no address validation, no correction. If the
+postal code does not match the city, you find out when the merchant rejects it.
+
+## Read
+
+<CodeGroup>
+```bash Get one
+curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $CKV_KEY"
+```
+
+```bash List
+curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $CKV_KEY"
+```
+</CodeGroup>
+
+```json List → 200
+{
+  "data": [
+    {
+      "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+      "label": "ada-home",
+      "name": { "first": "Ada", "last": "Lovelace" },
+      "contact": { "email": "ada@example.com", "phone": "+15555550123" },
+      "shipping": { "addressLines": ["1 Analytical Way"], "locality": "Louisville", "administrativeAreaCode": "KY", "postalCode": "40202", "countryCode": "US" },
+      "createdAt": "2026-07-29T09:12:04.881Z"
+    }
+  ],
+  "nextCursor": "2026-07-29T09:12:04.881Z"
+}
+```
+
+The list is cursor-paginated, newest first. Pass `nextCursor` back as `?cursor=` for the next
+page; `nextCursor: null` means you have them all. `limit` defaults to 20 and caps at 100.
+
+## No update, no delete
+
+There is no `PATCH` and no `DELETE` for buyer profiles. To change an address, create a new
+profile and use its id on subsequent checkouts.
+
+The reason it works this way: a profile is referenced by every checkout that used it, and
+past checkouts should keep showing the address the order actually went to. Whether that
+justifies having no deletion path at all is a fair question — see
+[Errors and limits](/errors-and-limits#known-gaps).
+
+<Note>
+Deleting the tenant cascades to its profiles, and deleting a profile a checkout referenced
+would null out that reference rather than orphan the checkout. Neither is reachable through
+the public API today.
+</Note>
+
+## Profiles and stored merchant sessions
+
+A buyer profile is also the identity that [buyer sessions](/buyer-sessions) hang off. When a
+run logs into a merchant with credentials you supplied, the resulting cookies are stored
+against `(tenant, buyerProfileId, merchantDomain)` — so the *next* checkout for that profile
+at that merchant starts logged in.
+
+That means the profile id is not just an address book entry. Reusing one profile across
+unrelated end users would share their merchant logins. One profile per end user.
