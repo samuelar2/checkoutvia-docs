@@ -511,11 +511,9 @@
             "name": "subject",
             "in": "query",
             "required": false,
-            "description": "Filter to one end user. Composes with `status`, `limit` and `cursor`; a subject with no checkouts is an empty page, not an error.\n\nA subject-bound key does not need this \u2014 its page is already narrowed to one person. Passing its own subject is fine; naming a different one is a `403`, refused rather than quietly ignored.",
+            "description": "Filter to one end user. Composes with `status`, `limit` and `cursor`; a subject with no checkouts is an empty page, not an error.\n\nA subject-bound key does not need this \u2014 its page is already narrowed to one person. Passing its own subject is fine; naming a different one is a `403`, refused rather than quietly ignored.\n\nThe value is matched exactly and not otherwise validated: a string no checkout carries is an empty page, whatever its length.",
             "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200
+              "type": "string"
             },
             "example": "user_a91f"
           }
