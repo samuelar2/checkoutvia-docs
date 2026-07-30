@@ -65,9 +65,9 @@ life of the key, like `mode` and `scopes`. The call at the top of this page answ
 audit, from your admin key, which of your outstanding keys act for whom.
 
 <ParamField body="subject" type="string">
-  Max 200 characters. Opaque to us: never parsed, never validated against anything, never sent
-  to a merchant, and never typed into a checkout form. There is no registry of subjects and no
-  endpoint that lists them — a subject exists because a row or a key mentions it.
+  1 to 200 characters, trimmed. Opaque to us: never parsed, never validated against anything,
+  never sent to a merchant, and never typed into a checkout form. There is no registry of
+  subjects and no endpoint that lists them — a subject exists because a row or a key mentions it.
 
   Prefer your own internal id over an email address or a name. It is stored with us and echoed
   back on reads, and an opaque id is the version of that data you would rather have in both
@@ -75,11 +75,36 @@ audit, from your admin key, which of your outstanding keys act for whom.
 </ParamField>
 
 <Warning>
-Do not send `"subject": ""`. An empty string is accepted, and then behaves like no subject at
-all: a key created with it acts tenant-wide, and a row created with it is invisible to every
-bound key while remaining visible to tenant-wide ones. `subject: user.id ?? ""` is the shape of
-this bug. Send a real id or omit the field.
+**`subject: ""` is refused.** An empty or whitespace-only string is a `400` on every body that
+takes the field, not a subject that quietly means nothing.
+
+`subject: user.id ?? ""` is the shape this protects you from. An empty string is falsy, so it
+used to mint a key that looked bound and acted tenant-wide, and tag rows that no bound key could
+ever see — an opt-in that silently no-ops is worse than no opt-in. It now fails at the call site,
+where you can still fix it.
 </Warning>
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": ["subject"]
+    }
+  ]
+}
+```
+
+`message` is `Invalid profile` on `POST /v1/buyer-profiles` and `Invalid request` on the other
+two; the `issues` are the same. Surrounding whitespace is stripped before the value is stored, so
+`" user_a91f "` and `"user_a91f"` are the same subject rather than two.
 
 ## What a bound key can reach
 
@@ -89,7 +114,7 @@ account-level questions refuse it outright.
 | Call | On a bound key |
 | --- | --- |
 | `POST /v1/checkouts` | Allowed. The checkout is stamped with the key's subject. |
-| `GET /v1/checkouts` | Only that subject's checkouts. Another end user's runs are not in the page — not redacted, absent. |
+| `GET /v1/checkouts` | Only that subject's checkouts. Another end user's runs are not in the page — not redacted, absent. `?subject=` naming anyone else is a **`403`**. |
 | `GET`/`DELETE /v1/checkouts/{id}` | `404 Checkout not found` for another subject's checkout. |
 | `POST /v1/checkouts/{id}/actions/{actionId}` | `404 Checkout not found` — you cannot answer a question raised on someone else's run. |
 | `POST /v1/checkouts/{id}/embed-token` | `404 Checkout not found` — you cannot watch someone else's browser. |
@@ -104,8 +129,9 @@ account-level questions refuse it outright.
 | `GET /v1/usage` | **`403`** — billing is between us and you. |
 | `POST`/`GET`/`DELETE /v1/webhooks` | **`403`** — endpoints receive every end user's transitions. |
 
-The four `403`s are all the same judgement: those calls answer questions about the *account*,
-not about a buyer. An end user's key enumerating its siblings, revoking the account's own key,
+The four account-level `403`s — the key list, revocation, usage, webhooks — are all the same
+judgement: those calls answer questions about the *account*, not about a buyer. An end user's key
+enumerating its siblings, revoking the account's own key,
 reading the account's total spend, or subscribing to everyone's checkout activity would each be
 a leak between your own customers.
 
@@ -130,19 +156,46 @@ This is the same rule that already governs [scopes](/authentication#scopes) and
 `mode`: a key can only ever hand out authority it already holds. Without it, one `POST` turns a
 single buyer's credential into the account's.
 
-### Borrowing another buyer's stored address
+## Which buyer profile a checkout may use
 
-`buyerProfileId` on `POST /v1/checkouts` is resolved through the same fence, so a bound key
-cannot attach an end user it does not own:
+`buyerProfileId` on `POST /v1/checkouts` is validated against **the checkout's** subject, not the
+authenticating key's. That distinction is the whole point: a tenant-wide admin key passes any
+key-level fence trivially, so a check written against the key would have let one `POST` create a
+checkout stamped `subject: "user_bob"` while spending Alice's stored address — handing her address
+to a merchant, her order to a stranger, and writing any merchant login that run captured back onto
+her profile.
 
-```json 400
+| The profile is tagged | The checkout is tagged | Result |
+| --- | --- | --- |
+| another end user | anything, on a **bound** key | `400 buyerProfileId not found` |
+| `user_alice` | `user_bob` | `403`, naming both subjects |
+| not at all (shared) | `user_bob` | Allowed |
+| `user_alice` | not at all | Allowed |
+
+```json 400 — a bound key reaching for another end user's profile
 { "error": true, "message": "buyerProfileId not found" }
 ```
 
-It is a `400` rather than a `403` because from that key's position the profile genuinely does
-not exist — the ownership check and the existence check are the same query. Worth stopping on:
-without it, one agent could ship a parcel to another customer's home address, which hands their
-address to a merchant and their order to a stranger.
+```json 403 — a tenant-wide key mixing two end users
+{
+  "error": true,
+  "message": "buyerProfileId belongs to subject 'user_alice', but this checkout is for 'user_bob'."
+}
+```
+
+The first is a `400` rather than a `403` because from a bound key's position the profile genuinely
+does not exist — the ownership check and the existence check are the same query, and a `403` would
+confirm that some other end user has a profile by that id.
+
+<Note>
+**An untagged profile with a tagged checkout stays legal**, and so does the reverse. Only a
+genuine mismatch between two different end users is refused.
+
+That is deliberate: adoption is incremental. Profiles you created before you started tagging have
+no subject, a shared operations address is a reasonable thing to keep untagged, and refusing those
+combinations would mean no tenant could turn `subject` on without a backfill it has no endpoint
+for.
+</Note>
 
 ## Tagging rows from a tenant-wide key
 
@@ -173,9 +226,6 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 ```
 </CodeGroup>
 
-A serialized checkout carries `subject` when it is set, and omits the field entirely when it is
-not. A buyer profile always carries it, `null` when the profile is not tagged.
-
 On a bound key the field is redundant but permitted: sending the key's own subject is fine,
 sending any other value is a `403`.
 
@@ -188,6 +238,72 @@ Tagging from an admin key gets you the audit trail — you can answer "what has 
 — without getting you the containment. The agent still holds a key that can read everyone. If
 the point is to survive a prompt injection, the agent needs a bound key.
 </Tip>
+
+### A typo cannot produce an untagged row
+
+All three bodies that accept `subject` — `POST /v1/api-keys`, `POST /v1/checkouts` and
+`POST /v1/buyer-profiles` — reject unknown top-level fields. A misspelled `subjectt` is a `400`:
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    {
+      "code": "unrecognized_keys",
+      "keys": ["subjectt"],
+      "path": [],
+      "message": "Unrecognized key(s) in object: 'subjectt'"
+    }
+  ]
+}
+```
+
+This is the difference between a typo that fails loudly and a `201` carrying an untagged row that
+every key on the account can read. A permissive schema drops what it does not recognise, and the
+field most worth misspelling here is the one that decides who can see the row.
+
+Nested objects stay permissive on purpose — `target`, `constraints` and `metadata` are extension
+points, and unknown keys inside them are ignored rather than refused. The strictness is at the top
+level, where `subject` lives.
+
+### How `subject` comes back
+
+Three shapes, and they differ. Worth reading once if you are writing a client:
+
+| Read | Convention |
+| --- | --- |
+| A checkout, from create / get / an action submit | Present when set, **field absent** when not. |
+| A checkout **list** row | Same: present when set, absent when not. |
+| A buyer profile, from any endpoint | **Always present**, `null` when untagged. |
+| An API key, from `POST /v1/api-keys` | Present only when the new key is bound. |
+| An API key, from `GET /v1/api-keys` | **Always present**, `null` for a tenant-wide key. |
+
+Read it with a null-and-absent-tolerant accessor rather than a presence check, and none of this
+matters.
+
+## Listing one end user's runs
+
+`GET /v1/checkouts?subject=user_a91f` narrows the list to one end user, so a tenant that tags from
+an admin key can answer "what is this person's agent doing" without fetching every checkout:
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $CKV_ADMIN_KEY"
+```
+
+The filter composes with `status`, `limit` and `cursor`. Rows carry `subject` when the checkout has
+one, so you can also read it off an unfiltered page.
+
+A bound key does not need the parameter — its page is already narrowed to one person — and asking
+for somebody else's is refused rather than ignored:
+
+```json 403
+{ "error": true, "message": "This API key is bound to subject 'user_a91f' and cannot act for another." }
+```
+
+Passing its **own** subject is fine, which means the same client code can run against either kind
+of key. There is still no way to list the subjects you have used: that list is your user table.
 
 ## A profile cannot be reassigned
 
@@ -225,23 +341,21 @@ Honest boundaries. These are tenant-level facts, and a `subject` does not partit
     before the subject model is. See [Quotas](/errors-and-limits#quotas).
   </Accordion>
 
-  <Accordion title="Webhooks are tenant-wide and carry no subject">
+  <Accordion title="Webhook endpoints are tenant-wide">
     One endpoint receives the status transitions of every checkout on the account, for every end
-    user, and the payload is `{ type, checkoutId, status, failureReason, createdAt }` — there is
-    no `subject` on it. To route a delivery to the right user, resolve
-    `GET /v1/checkouts/{checkoutId}` with a tenant-wide key and read `subject` off the checkout,
-    or keep your own map from checkout id to user at creation time. Keeping the map is cheaper
-    and does not need a second call.
+    user. There is no per-subject endpoint, no per-subject delivery filter, and a bound key cannot
+    register or read an endpoint at all (`403`).
 
-    The same applies to `GET /v1/checkouts`: the list summary carries no `subject` and there is no
-    `?subject=` filter, so on a tenant-wide key you cannot tell one end user's runs from another's
-    without fetching each one. On a bound key you do not need to — the page only contains its own.
+    The payload does name the end user — `subject` is on it whenever the checkout has one — so
+    routing a delivery to the right person needs neither a callback nor a map of your own. See
+    [the event](/webhooks#the-event).
   </Accordion>
 
   <Accordion title="Usage and billing are the account's">
     `GET /v1/usage` reports completed checkouts and gross merchandise volume for the tenant.
     There is no per-subject breakdown, and a bound key cannot read it at all. Attribute spend
-    yourself from the `subject` on each checkout.
+    yourself from the `subject` on each checkout — `?subject=` on the checkout list is the cheapest
+    way to gather them.
   </Accordion>
 
   <Accordion title="Key mode is a separate axis">
@@ -301,13 +415,17 @@ per tenant. Two of your end users independently choosing `"order-1"` — a times
 counter, a cart id — is ordinary, and they have no way to coordinate because they cannot see
 each other. Each gets their own checkout; neither can replay the other's.
 
+The window is 24 hours, and it is per key rather than per subject: after that the same string is
+free again for whoever sends it next.
+
 ## Errors
 
 | Status | Message | Cause |
 | --- | --- | --- |
-| `400` | `Invalid request` / `Invalid profile` with `issues` | `subject` over 200 characters, or sent to `PATCH /v1/buyer-profiles/{id}` |
+| `400` | `Invalid request` / `Invalid profile` with `issues` | `subject` empty, whitespace-only, or over 200 characters; an unknown top-level field such as `subjectt`; or `subject` sent to `PATCH /v1/buyer-profiles/{id}` |
 | `400` | `buyerProfileId not found` | A bound key attaching another end user's profile |
-| `403` | `This API key is bound to subject '<s>' and cannot act for another.` | `POST /v1/checkouts` or `POST /v1/buyer-profiles` naming a different subject |
+| `403` | `buyerProfileId belongs to subject '<a>', but this checkout is for '<b>'.` | A tenant-wide key mixing one end user's profile into another's checkout |
+| `403` | `This API key is bound to subject '<s>' and cannot act for another.` | `POST /v1/checkouts` or `POST /v1/buyer-profiles` naming a different subject, or `GET /v1/checkouts?subject=` naming one |
 | `403` | `This API key is bound to subject '<s>' and cannot issue keys for another.` | `POST /v1/api-keys` naming a different subject |
 | `403` | `A subject-bound key cannot list account keys.` | `GET /v1/api-keys` |
 | `403` | `A subject-bound key cannot revoke account keys.` | `DELETE /v1/api-keys/{id}` |

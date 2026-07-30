@@ -183,7 +183,7 @@
           "Checkouts"
         ],
         "summary": "Create a checkout",
-        "description": "Returns immediately with a `queued` checkout. The run happens asynchronously in a durable orchestrator, so a client crash or a network blip never orphans a half-finished purchase.\n\nRequires the `checkouts.write` scope.\n\n**Retries.** Send an `Idempotency-Key` header and a duplicate `POST` returns the original checkout with `200` rather than buying the item twice. Without one, two identical requests are two runs and two orders.",
+        "description": "Returns immediately with a `queued` checkout. The run happens asynchronously in a durable orchestrator, so a client crash or a network blip never orphans a half-finished purchase.\n\nRequires the `checkouts.write` scope.\n\n**Retries.** Send an `Idempotency-Key` header and a duplicate `POST` returns the original checkout with `200` rather than buying the item twice. Without one, two identical requests are two runs and two orders. A key is live for 24 hours from the creation of the checkout that claimed it; after that the same string starts a new purchase.\n\n**Strict body.** An unrecognised top-level field is a `400`. A misspelled `subjectt` used to return `201` with an untagged checkout the whole account could read, and an isolation control that fails open on a typo is not a control.",
         "operationId": "createCheckout",
         "parameters": [
           {
@@ -311,7 +311,7 @@
             }
           },
           "400": {
-            "description": "Invalid body, or a `buyerProfileId` that is not yours.",
+            "description": "Invalid body \u2014 including an unrecognised top-level field, an empty `subject`, or a `buyerProfileId` that is not yours.",
             "content": {
               "application/json": {
                 "schema": {
@@ -342,6 +342,43 @@
                       "error": true,
                       "message": "buyerProfileId not found"
                     }
+                  },
+                  "unknownField": {
+                    "summary": "A misspelled top-level field, refused rather than dropped",
+                    "value": {
+                      "error": true,
+                      "message": "Invalid request",
+                      "issues": [
+                        {
+                          "code": "unrecognized_keys",
+                          "keys": [
+                            "subjectt"
+                          ],
+                          "path": [],
+                          "message": "Unrecognized key(s) in object: 'subjectt'"
+                        }
+                      ]
+                    }
+                  },
+                  "emptySubject": {
+                    "summary": "subject: \"\" \u2014 refused, not treated as tenant-wide",
+                    "value": {
+                      "error": true,
+                      "message": "Invalid request",
+                      "issues": [
+                        {
+                          "code": "too_small",
+                          "minimum": 1,
+                          "type": "string",
+                          "inclusive": true,
+                          "exact": false,
+                          "message": "String must contain at least 1 character(s)",
+                          "path": [
+                            "subject"
+                          ]
+                        }
+                      ]
+                    }
                   }
                 }
               }
@@ -351,7 +388,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Sandbox confinement, a suspended tenant, a missing scope, or a subject-bound key acting for another end user.",
+            "description": "Sandbox confinement, a suspended tenant, a missing scope, a subject-bound key acting for another end user, or a `buyerProfileId` belonging to a different end user than the checkout.",
             "content": {
               "application/json": {
                 "schema": {
@@ -391,6 +428,13 @@
                     "value": {
                       "error": true,
                       "message": "This API key is bound to subject 'user_a91f' and cannot act for another."
+                    }
+                  },
+                  "profileOfAnotherEndUser": {
+                    "summary": "A tenant-wide key mixing one end user's stored address into another's checkout",
+                    "value": {
+                      "error": true,
+                      "message": "buyerProfileId belongs to subject 'user_alice', but this checkout is for 'user_bob'."
                     }
                   }
                 }
@@ -445,7 +489,7 @@
           "Checkouts"
         ],
         "summary": "List checkouts",
-        "description": "Cursor-paginated summaries, newest first. Deliberately a summary rather than the full object: the full shape carries the whole event timeline, which is exactly what a list view must not fetch.\n\nRequires the `checkouts.read` scope.",
+        "description": "Cursor-paginated summaries, newest first. Deliberately a summary rather than the full object: the full shape carries the whole event timeline, which is exactly what a list view must not fetch.\n\nRequires the `checkouts.read` scope.\n\n`?subject=` narrows the page to one end user, and each row carries `subject` when the checkout has one. A subject-bound key is already narrowed to its own end user; asking for another's is a `403`.",
         "operationId": "listCheckouts",
         "parameters": [
           {
@@ -462,6 +506,18 @@
             "schema": {
               "$ref": "#/components/schemas/CheckoutStatus"
             }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "required": false,
+            "description": "Filter to one end user. Composes with `status`, `limit` and `cursor`; a subject with no checkouts is an empty page, not an error.\n\nA subject-bound key does not need this \u2014 its page is already narrowed to one person. Passing its own subject is fine; naming a different one is a `403`, refused rather than quietly ignored.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "example": "user_a91f"
           }
         ],
         "responses": {
@@ -497,6 +553,7 @@
                     {
                       "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
                       "status": "succeeded",
+                      "subject": "user_a91f",
                       "url": "https://your-sandbox-store.myshopify.com/products/widget",
                       "request": "buy this in medium, cheapest delivery",
                       "receipt": {
@@ -558,7 +615,37 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "$ref": "#/components/responses/Forbidden"
+            "description": "A missing scope, a suspended tenant, or a subject-bound key asking for another end user's rows with `?subject=`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ScopeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                },
+                "examples": {
+                  "scope": {
+                    "value": {
+                      "error": true,
+                      "message": "This API key is missing the 'checkouts.read' scope.",
+                      "requiredScope": "checkouts.read"
+                    }
+                  },
+                  "otherSubject": {
+                    "summary": "A bound key filtering for somebody else",
+                    "value": {
+                      "error": true,
+                      "message": "This API key is bound to subject 'user_a91f' and cannot act for another."
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1136,7 +1223,7 @@
           "Buyer profiles"
         ],
         "summary": "Update a buyer profile",
-        "description": "Partial at the top level, wholesale underneath. `name`, `contact` and `shipping` are each stored as one JSON document: omit a key and that document is untouched; supply one and it **replaces** the old document entirely.\n\nThat is deliberate. Merging half an address into an old one is how you ship a parcel to a street in the wrong city \u2014 so send a whole `shipping` object or none at all.\n\nAn empty body is a `400`, not a no-op. There is no way to set a document back to `null` through this endpoint; send `{}` to empty it.\n\nRequires the `buyer-profiles.write` scope.",
+        "description": "Partial at the top level, wholesale underneath. `name`, `contact` and `shipping` are each stored as one JSON document: omit a key and that document is untouched; supply one and it **replaces** the old document entirely.\n\nThat is deliberate. Merging half an address into an old one is how you ship a parcel to a street in the wrong city \u2014 so send a whole `shipping` object or none at all.\n\nAn empty body is a `400`, not a no-op. Send `\"shipping\": null` to clear a document outright \u2014 which is how an address you no longer want held is removed short of deleting the whole profile. `{}` stores an empty object instead, which is a different thing.\n\nRequires the `buyer-profiles.write` scope.",
         "operationId": "updateBuyerProfile",
         "requestBody": {
           "required": true,
@@ -1501,26 +1588,66 @@
           "Webhooks"
         ],
         "summary": "List webhook endpoints",
-        "description": "Active endpoints only \u2014 revoked ones are excluded. Not paginated. Never returns a secret.\n\nRequires the `webhooks.read` scope.\n\nA subject-bound key cannot manage webhook endpoints. One endpoint receives the transitions of every checkout the tenant runs, for every end user, so registering or reading them from a single person's key would be a way to subscribe to everyone else's activity. `403`.",
+        "description": "Active endpoints only \u2014 revoked ones are excluded. Never returns a secret.\n\nAnswers `{ data, endpoints, nextCursor }`: read `data`, the field the checkout and buyer-profile lists also use. `endpoints` is the same array under its original name, and `nextCursor` is always `null` because this collection is not paged.\n\nRequires the `webhooks.read` scope.\n\nA subject-bound key cannot manage webhook endpoints. One endpoint receives the transitions of every checkout the tenant runs, for every end user, so registering or reading them from a single person's key would be a way to subscribe to everyone else's activity. `403`.",
         "operationId": "listWebhookEndpoints",
         "responses": {
           "200": {
-            "description": "Endpoints, newest first.",
+            "description": "Active endpoints, newest first. Revoked ones are excluded. Not paged.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "required": [
-                    "endpoints"
+                    "data",
+                    "endpoints",
+                    "nextCursor"
                   ],
                   "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookEndpoint"
+                      },
+                      "description": "The collection. Read this one \u2014 it is the field the checkout and buyer-profile lists answer with too. (`GET /v1/buyer-sessions` is the one list route that has not converged: it answers `{ sessions, vaultEnabled }`.)"
+                    },
                     "endpoints": {
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/WebhookEndpoint"
-                      }
+                      },
+                      "description": "The same array under the field's original name, kept because existing callers read it. Identical contents; prefer `data` in new code."
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Always `null` here \u2014 the collection is small and tenant-bounded, so there is nothing to page. Present so a generic list client needs no special case."
                     }
                   }
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+                      "url": "https://hooks.example.com/checkoutvia",
+                      "label": "prod",
+                      "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
+                      "lastDeliveryStatus": 200,
+                      "createdAt": "2026-07-28T14:03:55.204Z"
+                    }
+                  ],
+                  "endpoints": [
+                    {
+                      "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
+                      "url": "https://hooks.example.com/checkoutvia",
+                      "label": "prod",
+                      "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
+                      "lastDeliveryStatus": 200,
+                      "createdAt": "2026-07-28T14:03:55.204Z"
+                    }
+                  ],
+                  "nextCursor": null
                 }
               }
             }
@@ -1605,7 +1732,7 @@
           "API keys"
         ],
         "summary": "Create an API key",
-        "description": "The plaintext key is returned exactly once, here. Only `sha256(key)` is stored \u2014 no endpoint, support process or database query can recover it.\n\n**Scopes.** Omit `scopes` and the key gets `[\"*\"]`, full access, which is what a key has always meant here. Supply an array to narrow it. A key can never mint a key with scopes it does not itself hold, so `api-keys.write` is not a back door to `*`.\n\n**Mode.** A sandbox-only account cannot create a `live` key. Mode is fixed at creation; there is no promotion path.\n\nAn empty body is valid and produces a full-access `test` key.\n\nRequires the `api-keys.write` scope.",
+        "description": "The plaintext key is returned exactly once, here. Only `sha256(key)` is stored \u2014 no endpoint, support process or database query can recover it.\n\n**Scopes.** Omit `scopes` and the key gets `[\"*\"]`, full access, which is what a key has always meant here. Supply an array to narrow it. A key can never mint a key with scopes it does not itself hold, so `api-keys.write` is not a back door to `*`.\n\n**Mode.** Two independent `403`s guard a `live` key: a sandbox-only account cannot create one, and a `ck_test_` key cannot issue one however activated the account is. Authority passes down, never sideways \u2014 otherwise the sandbox confinement a test key exists to provide would be one `POST` deep. Mode is fixed at creation; there is no promotion path. A consequence worth planning for: a self-serve signup only ever holds `ck_test_` keys, so the first `ck_live_` key on a newly activated account cannot be minted through this endpoint and has to be issued during activation.\n\nAn empty body is valid and produces a full-access `test` key.\n\nRequires the `api-keys.write` scope.",
         "operationId": "createApiKey",
         "requestBody": {
           "required": false,
@@ -1639,13 +1766,15 @@
                   },
                   "subject": {
                     "type": "string",
+                    "minLength": 1,
                     "maxLength": 200,
-                    "description": "Bind the key to one of your end users \u2014 your own opaque id, max 200 characters. **Omit for a tenant-wide key**, which is what every key issued before this existed already is.\n\nA bound key sees and creates only that subject's checkouts and buyer profiles, and is refused outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`, `/v1/webhooks`).\n\nMinting from a bound key **inherits** the binding: omitting `subject` gives another key for the same end user, not a tenant-wide one, and naming a different subject is a `403`. Fixed at creation \u2014 there is no rebinding and no unbinding.",
+                    "description": "Bind the key to one of your end users \u2014 your own opaque id, 1 to 200 characters after trimming. **Omit for a tenant-wide key**, which is what every key issued before this existed already is. `\"\"` is a `400`, not a tenant-wide key by another name.\n\nA bound key sees and creates only that subject's checkouts and buyer profiles, and is refused outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`, `/v1/webhooks`).\n\nMinting from a bound key **inherits** the binding: omitting `subject` gives another key for the same end user, not a tenant-wide one, and naming a different subject is a `403`. Fixed at creation \u2014 there is no rebinding and no unbinding.",
                     "examples": [
                       "user_a91f"
                     ]
                   }
-                }
+                },
+                "description": "The top level is strict: an unrecognised field is a `400` with an `unrecognized_keys` issue, not a field the server drops for you. The field most worth misspelling here is `subject`, and a `201` carrying an untagged row is an isolation control that failed open on a typo."
               },
               "examples": {
                 "fullAccess": {
@@ -1792,28 +1921,73 @@
           "API keys"
         ],
         "summary": "List API keys",
-        "description": "Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set \u2014 filter client-side if you only want active ones.\n\nListing never returns a secret. `keyPrefix` is the most a list can show.\n\nRequires the `api-keys.read` scope.\n\nA subject-bound key cannot call this: the key list is a tenant-wide fact, and a credential acting for one end user must not be able to enumerate its siblings. `403`.",
+        "description": "Answers `{ data, keys, nextCursor }`: `data` is the field the checkout and buyer-profile lists also use and the one to read, `keys` is the same array under its original name, and `nextCursor` is always `null` because this collection is not paged. Newest first. **Revoked keys are included**, with `revokedAt` set \u2014 filter client-side if you only want active ones.\n\nListing never returns a secret. `keyPrefix` is the most a list can show.\n\nRequires the `api-keys.read` scope.\n\nA subject-bound key cannot call this: the key list is a tenant-wide fact, and a credential acting for one end user must not be able to enumerate its siblings. `403`.",
         "operationId": "listApiKeys",
         "responses": {
           "200": {
-            "description": "Every key on the tenant.",
+            "description": "Every key on the tenant, newest first, revoked ones included. Not paged.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "required": [
-                    "keys"
+                    "data",
+                    "keys",
+                    "nextCursor"
                   ],
                   "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKeySummary"
+                      },
+                      "description": "The collection. Read this one \u2014 it is the field the checkout and buyer-profile lists answer with too. (`GET /v1/buyer-sessions` is the one list route that has not converged: it answers `{ sessions, vaultEnabled }`.)"
+                    },
                     "keys": {
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/ApiKeySummary"
-                      }
+                      },
+                      "description": "The same array under the field's original name, kept because existing callers read it. Identical contents; prefer `data` in new code."
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Always `null` here \u2014 the collection is small and tenant-bounded, so there is nothing to page. Present so a generic list client needs no special case."
                     }
                   }
                 },
                 "example": {
+                  "data": [
+                    {
+                      "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+                      "label": "agent for user_a91f",
+                      "mode": "live",
+                      "scopes": [
+                        "checkouts.write"
+                      ],
+                      "subject": "user_a91f",
+                      "keyPrefix": "ck_live_9Hf2QzT",
+                      "lastUsedAt": "2026-07-29T09:14:31.190Z",
+                      "revokedAt": null,
+                      "createdAt": "2026-07-29T09:02:10.771Z"
+                    },
+                    {
+                      "id": "8b7c6d5e-4f30-4a21-9b8c-0d1e2f3a4b5c",
+                      "label": "ci",
+                      "mode": "test",
+                      "scopes": [
+                        "*"
+                      ],
+                      "subject": null,
+                      "keyPrefix": "ck_test_3sQd7yQ",
+                      "lastUsedAt": null,
+                      "revokedAt": "2026-07-27T11:44:09.331Z",
+                      "createdAt": "2026-07-20T08:15:02.640Z"
+                    }
+                  ],
                   "keys": [
                     {
                       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
@@ -1841,7 +2015,8 @@
                       "revokedAt": "2026-07-27T11:44:09.331Z",
                       "createdAt": "2026-07-20T08:15:02.640Z"
                     }
-                  ]
+                  ],
+                  "nextCursor": null
                 }
               }
             }
@@ -2065,7 +2240,7 @@
         "name": "Idempotency-Key",
         "in": "header",
         "required": false,
-        "description": "Makes a create safe to retry. A second request with the same key returns the **original** checkout with `200` instead of starting a second run; the same key with a different body is a `409`.\n\nStrongly recommended on every create. A `POST` that times out after the server accepted it is indistinguishable, from the caller's side, from one that never landed, and every autonomous caller retries a timeout by default \u2014 so without this header the worst failure mode of the product is reachable by an ordinary network blip.\n\nThe request body is hashed with its object keys sorted and its defaults applied, so key order does not matter and `\"constraints\": {}` matches an omitted `constraints`. Keys are namespaced per (tenant, `subject`) and never expire. An empty or whitespace-only value is treated as absent.\n\nRead by `POST /v1/checkouts` only; every other endpoint ignores it.",
+        "description": "Makes a create safe to retry. A second request with the same key returns the **original** checkout with `200` instead of starting a second run; the same key with a different body is a `409`.\n\nStrongly recommended on every create. A `POST` that times out after the server accepted it is indistinguishable, from the caller's side, from one that never landed, and every autonomous caller retries a timeout by default \u2014 so without this header the worst failure mode of the product is reachable by an ordinary network blip.\n\nThe request body is hashed with its object keys sorted and its defaults applied, so key order does not matter and `\"constraints\": {}` matches an omitted `constraints`. Keys are namespaced per (tenant, `subject`) and live 24 hours, measured from the creation of the checkout that claimed one. Inside the window a retry replays; outside it the key is released and the same string starts a new purchase. Release is an hourly background sweep, so the boundary is approximate to within an hour, and it clears the key off the checkout without otherwise touching the row. An empty or whitespace-only value is treated as absent.\n\nRead by `POST /v1/checkouts` only; every other endpoint ignores it.",
         "schema": {
           "type": "string"
         },
@@ -2714,6 +2889,13 @@
           "status": {
             "$ref": "#/components/schemas/CheckoutStatus"
           },
+          "subject": {
+            "type": "string",
+            "description": "Your own id for the end user this checkout is for. **Absent** when the checkout is not tagged to one \u2014 the same convention as the full object.",
+            "examples": [
+              "user_a91f"
+            ]
+          },
           "url": {
             "type": [
               "string",
@@ -2781,12 +2963,13 @@
           "buyerProfileId": {
             "type": "string",
             "format": "uuid",
-            "description": "Must belong to your tenant, or the request is a `400`. Without one the agent has no address, and on most merchants that is where the run stops \u2014 or it raises a `shipping` action."
+            "description": "Must belong to your tenant, or the request is a `400`. Without one the agent has no address, and on most merchants that is where the run stops \u2014 or it raises a `shipping` action.\n\nChecked against **this checkout's** `subject`, not the authenticating key's. A subject-bound key naming another end user's profile gets the same `400 buyerProfileId not found` \u2014 from where it stands the profile does not exist. A tenant-wide key naming one end user's profile alongside another's `subject` gets a `403` naming both. An untagged profile on a tagged checkout is allowed, and so is the reverse, so subjects can be adopted incrementally."
           },
           "subject": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 200,
-            "description": "Your own opaque id for one of your end users. Max 200 characters; never parsed, never validated against anything, and never sent to a merchant.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\nIt also namespaces the `Idempotency-Key`: two end users may pick the same key string without colliding.",
+            "description": "Your own opaque id for one of your end users. 1 to 200 characters after trimming; never parsed, never validated against anything, and never sent to a merchant. An empty or whitespace-only value is a `400` \u2014 a subject that means nothing reads as isolation you do not have.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\nIt also namespaces the `Idempotency-Key`: two end users may pick the same key string without colliding. `GET /v1/checkouts?subject=` filters the list by it, and `checkout.status_changed` deliveries carry it.",
             "examples": [
               "user_a91f"
             ]
@@ -2805,7 +2988,8 @@
             "default": {},
             "description": "Anything you want echoed back on every poll."
           }
-        }
+        },
+        "description": "The top level is strict: an unrecognised field is a `400` with an `unrecognized_keys` issue, not a field the server drops for you. The field most worth misspelling here is `subject`, and a `201` carrying an untagged row is an isolation control that failed open on a typo.\n\n`target`, `constraints` and `metadata` stay permissive inside \u2014 they are extension points, and unknown keys within them are ignored."
       },
       "ActionSubmit": {
         "type": "object",
@@ -2906,7 +3090,7 @@
       "BuyerProfileCreate": {
         "type": "object",
         "title": "BuyerProfileCreate",
-        "description": "Every field is optional \u2014 `{}` is a valid profile \u2014 but the agent can only fill what you gave it. Unknown keys are ignored here (unlike `PATCH`, which rejects them).",
+        "description": "Every field is optional \u2014 `{}` is a valid profile \u2014 but the agent can only fill what you gave it.\n\nThe top level is strict: an unrecognised field is a `400` with an `unrecognized_keys` issue, not a field the server drops for you. The field most worth misspelling here is `subject`, and a `201` carrying an untagged row is an isolation control that failed open on a typo. The nested `name`, `contact` and `shipping` objects are not strict. `PATCH` is strict in the same way.",
         "additionalProperties": false,
         "properties": {
           "label": {
@@ -2915,8 +3099,9 @@
           },
           "subject": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 200,
-            "description": "Your own opaque id for one of your end users. Max 200 characters; never parsed, never validated against anything, and never sent to a merchant.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\n**Create-only.** A profile cannot be reassigned to another end user afterwards: `PATCH` with `subject` is a `400`.",
+            "description": "Your own opaque id for one of your end users. 1 to 200 characters after trimming; never parsed, never validated against anything, and never sent to a merchant. An empty or whitespace-only value is a `400` \u2014 a subject that means nothing reads as isolation you do not have.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\n**Create-only.** A profile cannot be reassigned to another end user afterwards: `PATCH` with `subject` is a `400`.",
             "examples": [
               "user_a91f"
             ]
@@ -3355,14 +3540,15 @@
                   "type": "string",
                   "examples": [
                     "2026-07-28"
-                  ]
+                  ],
+                  "description": "`YYYY-MM-DD`, in UTC."
                 },
                 "count": {
                   "type": "integer"
                 }
               }
             },
-            "description": "Days with no completions are omitted, not zero-filled."
+            "description": "Completed checkouts per **UTC day**, cut at UTC midnight to match `from`, `to` and every other timestamp the API returns \u2014 the bucket a checkout lands in never depends on the server's timezone or yours. Days with no completions are omitted, not zero-filled."
           },
           "merchandiseVolume": {
             "type": "array",
@@ -3370,6 +3556,121 @@
               "$ref": "#/components/schemas/Money"
             },
             "description": "Gross merchandise volume by currency. Reporting only \u2014 billing is per completed checkout, not a percentage."
+          }
+        }
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "title": "WebhookEvent",
+        "description": "The body of a `checkout.status_changed` delivery. It says **that** something changed, not what the checkout now looks like: fetch `GET /v1/checkouts/{checkoutId}` for the state.",
+        "required": [
+          "type",
+          "checkoutId",
+          "status",
+          "failureReason",
+          "createdAt"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "checkout.status_changed",
+            "description": "The only event type today. Switch on it anyway and ignore what you do not recognise."
+          },
+          "checkoutId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CheckoutStatus"
+          },
+          "failureReason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FailureReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only when `status` is `failed`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Your own id for the end user this checkout is for. **Absent** when the checkout is not tagged to one.\n\nAn endpoint is tenant-wide \u2014 it receives every end user's transitions \u2014 so this is what lets a delivery be routed to the right person without a callback or a map of your own.",
+            "examples": [
+              "user_a91f"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the transition was dispatched, stamped once \u2014 a retried delivery carries the original event time."
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "checkout.status_changed": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Checkout status changed",
+        "description": "Delivered to every active endpoint on the tenant when a checkout moves status. `queued` does not fire \u2014 creation is synchronous and the caller already holds the object. Delivery is best-effort with a 10-second timeout and 3 retries, carries no event id and no ordering guarantee, so treat it as a doorbell and make the handler idempotent against the state you fetch.",
+        "operationId": "checkoutStatusChanged",
+        "security": [],
+        "parameters": [
+          {
+            "name": "x-checkoutvia-signature",
+            "in": "header",
+            "required": true,
+            "description": "`t=<unix seconds>,v1=<hex>`. `v1` is `HMAC-SHA256(secret, \"<t>.<raw body>\")` with the endpoint's `whsec_\u2026` secret. Verify against the raw request bytes, before any JSON parse.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "t=1785317685,v1=9f8b1d3c7a0e4b2f"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "examples": {
+                "taggedToAnEndUser": {
+                  "summary": "A checkout carrying a subject",
+                  "value": {
+                    "type": "checkout.status_changed",
+                    "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                    "status": "awaiting_user_action",
+                    "failureReason": null,
+                    "subject": "user_a91f",
+                    "createdAt": "2026-07-29T09:14:45.622Z"
+                  }
+                },
+                "untagged": {
+                  "summary": "An untagged checkout \u2014 no subject field at all",
+                  "value": {
+                    "type": "checkout.status_changed",
+                    "checkoutId": "0c9d8e7f-6a5b-4c3d-9e2f-112233445566",
+                    "status": "failed",
+                    "failureReason": "automation_failed",
+                    "createdAt": "2026-07-29T09:31:02.418Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Acknowledged. Return quickly and do the work out of band \u2014 anything slower than 10 seconds is treated as a failure and retried."
+          },
+          "4XX": {
+            "description": "Anything outside `2xx` counts as a failure and is retried. `410 Gone` does not auto-disable the endpoint \u2014 revoke it with `DELETE /v1/webhooks/{id}`."
           }
         }
       }

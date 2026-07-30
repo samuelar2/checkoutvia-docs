@@ -34,15 +34,18 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 ### Body
 
 Every field is optional — `{}` is a valid profile — but the agent can only fill what you gave
-it.
+it. The top level is **strict**, exactly like `PATCH`: an unknown field is a `400` with an
+`unrecognized_keys` issue rather than a field we quietly drop, because the field most worth
+misspelling here is `subject`, and a `201` carrying an untagged profile is a fence that is not
+there. The nested `name`, `contact` and `shipping` objects are not strict.
 
 <ParamField body="label" type="string">
   Yours, for bookkeeping. Never sent to a merchant.
 </ParamField>
 
 <ParamField body="subject" type="string">
-  Your own id for the end user this profile belongs to. Max 200 characters, opaque to us, never
-  sent to a merchant.
+  Your own id for the end user this profile belongs to. 1 to 200 characters after trimming, opaque
+  to us, never sent to a merchant. `""` is a `400`.
 
   On a [subject-bound key](/end-user-isolation) it is filled in for you — omit it and the profile
   is stamped with the key's subject; name a different one and the request is a `403`. On a
@@ -119,7 +122,8 @@ typed exactly as sent.
 Omitted sub-objects come back as `null`, not as `{}`. `subject` is always present and `null` on
 an untagged profile — unlike a checkout, which omits the field entirely.
 
-`400 Invalid profile` with `issues` on a type mismatch.
+`400 Invalid profile` with `issues` on a type mismatch, an unknown top-level field, or an empty
+`subject`.
 
 ---
 
@@ -182,7 +186,8 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
 Newest first. `nextCursor: null` means the last page.
 
 On a [subject-bound key](/end-user-isolation) this page contains only that end user's profiles.
-There is no `?subject=` filter for a tenant-wide key — read `subject` off each row.
+There is no `?subject=` filter here — unlike the checkout list, which has one — so a tenant-wide key
+reads `subject` off each row.
 
 ---
 
@@ -235,7 +240,8 @@ throws the address away and stores one that is only a postcode. Send the whole o
   no longer want us holding, short of deleting the profile.
 </ParamField>
 
-`subject` is **not** accepted here. Unlike create, this schema is strict.
+`subject` is **not** accepted here. Both schemas are strict, so this is a `400` rather than a
+silently dropped field.
 
 ### Errors
 
@@ -245,8 +251,8 @@ throws the address away and stores one that is only a postcode. Send the whole o
 | `400` | `Invalid profile` (with `issues`) — type mismatch, or any key outside the four |
 | `404` | `Profile not found` |
 
-The schema is strict, so an unexpected key is a `400` rather than a silently dropped field. That
-is most likely to bite you with `subject`:
+An unexpected key is a `400` rather than a silently dropped field. That is most likely to bite you
+with `subject`:
 
 ```json 400
 {

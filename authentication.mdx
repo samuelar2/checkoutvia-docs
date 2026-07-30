@@ -149,6 +149,9 @@ revoke account keys, cannot read `/v1/usage`, cannot manage webhooks, and cannot
 anybody else. A key without one is tenant-wide — which is what every key issued before this
 existed already is, so the mechanism is inert until you use it.
 
+Send a real id or omit the field: `""` is a `400`, and a misspelled `subjectt` is a `400` too, so
+there is no body that returns `201` with a key you believe is bound and is not.
+
 Full contract, including what it deliberately does not cover:
 [End-user isolation](/end-user-isolation).
 
@@ -185,7 +188,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
 
 ```json List → 200
 {
-  "keys": [
+  "data": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
       "label": "ci",
@@ -197,9 +200,14 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
       "revokedAt": null,
       "createdAt": "2026-07-29T09:02:10.771Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
+
+Read the array from `data`, the field the checkout and buyer-profile lists also use. The same array
+comes back as `keys` too — the original field name, kept for existing callers — and `nextCursor` is
+always `null` because this collection is not paged.
 
 Listing never returns a secret — the `key` field exists only on the creation response. It does
 return `scopes` and `subject`, which is how you audit what each outstanding key can reach and
@@ -258,8 +266,9 @@ The full refusal, including which of the two reasons applied, is documented in
 
 ### Minting a live key
 
-A sandbox-only account **cannot create one**. `POST /v1/api-keys` with `{"mode":"live"}`
-returns `403`:
+Two independent things have to be true, and each refusal is a `403`.
+
+**The account must be activated.** A sandbox-only account cannot create a live key at all:
 
 ```json
 {
@@ -268,8 +277,24 @@ returns `403`:
 }
 ```
 
-Once the account is activated, `{"mode":"live"}` works and only then can any of its keys
-reach a real merchant.
+**The calling key must itself be live.** A `ck_test_` key cannot issue a `ck_live_` one, however
+activated the account is and however broad the test key's scopes are:
+
+```json
+{
+  "error": true,
+  "message": "A test key cannot issue a live key. Use a live key, or activate the account."
+}
+```
+
+That second rule is the same one that governs scopes and `subject`: authority passes down, never
+sideways. Without it, the sandbox confinement a test key exists to provide would be one `POST` deep
+— a tenant that deliberately handed its agent a test key could be talked into minting a live one,
+and every guarantee on this page would evaporate. A live key minting a test key is fine; that is
+narrowing.
+
+With an activated account and a live key in hand, `{"mode":"live"}` works, and only then can any of
+its keys reach a real merchant.
 
 <Tip>
 This gives you a genuinely spend-proof credential for CI, staging, and anything running

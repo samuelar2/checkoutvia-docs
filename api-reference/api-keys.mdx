@@ -64,9 +64,9 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
 </ParamField>
 
 <ParamField body="subject" type="string">
-  Bind the key to one of your end users. Max 200 characters, your own opaque id — we never
-  generate one. **Omit for a tenant-wide key**, which is what every key issued before this
-  existed already is.
+  Bind the key to one of your end users. 1 to 200 characters after trimming, your own opaque id —
+  we never generate one. **Omit for a tenant-wide key**, which is what every key issued before this
+  existed already is. `""` is a `400`, not a tenant-wide key by another name.
 
   A bound key sees and creates only that subject's checkouts and buyer profiles, and is refused
   outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`,
@@ -78,7 +78,9 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
 </ParamField>
 
 An empty body is valid and produces a full-access `test` key — tenant-wide, unless the key you
-called with is itself bound.
+called with is itself bound. The body is otherwise **strict**: an unknown field is a `400` with an
+`unrecognized_keys` issue, so a misspelled `subjectt` cannot hand you a tenant-wide key you believed
+was bound.
 
 ```json Response (201) — the bound variant
 {
@@ -108,7 +110,7 @@ process or database query can recover it.
 
 | Status | Message | Extra field |
 | --- | --- | --- |
-| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, or `scopes` was empty / over 32 entries | `issues` |
+| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, `scopes` was empty / over 32 entries, `subject` was empty or over 200 characters, or the body carried an unknown field | `issues` |
 | `400` | `Unknown scope(s): …` — a string that is not in the valid set | `validScopes` |
 | `403` | `This account is sandbox-only. Live keys require activation.` | — |
 | `403` | `A test key cannot issue a live key. Use a live key, or activate the account.` | — |
@@ -154,7 +156,7 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
 
 ```json
 {
-  "keys": [
+  "data": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
       "label": "agent for user_a91f",
@@ -177,12 +179,23 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
       "revokedAt": "2026-07-27T11:44:09.331Z",
       "createdAt": "2026-07-20T08:15:02.640Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
-Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set — filter
-client-side if you only want active ones.
+**Read `data`.** It is the field checkouts, buyer profiles and webhook endpoints already answer with,
+and this route now matches them.
+
+The response also repeats that identical array as `keys` — the field's original name, elided from
+the example above for length. It is kept because existing callers and the published MCP client read
+it, and it is not going away; `data` is simply the one to write new code against.
+
+`nextCursor` is always `null` here — the collection is small and tenant-bounded, so there is nothing
+to page. It exists so a generic list helper does not need a special case.
+
+Newest first. **Revoked keys are included**, with `revokedAt` set — filter client-side if you only
+want active ones.
 
 Listing never returns a secret. `keyPrefix` is the most a list can show. It does return
 `scopes`, which is how you audit what each outstanding key can reach; `["*"]` is a full-access

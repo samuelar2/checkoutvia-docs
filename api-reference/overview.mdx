@@ -39,9 +39,16 @@ surfaces do not:
 </ResponseField>
 
 <ResponseField name="Pagination" type="cursor">
-  List endpoints for checkouts and buyer profiles return `{ data, nextCursor }`, newest
-  first. Pass `nextCursor` back as `?cursor=`; `null` means the end. `limit` defaults to 20
+  Checkouts, buyer profiles, API keys and webhook endpoints all return `{ data, nextCursor }`,
+  newest first. Pass `nextCursor` back as `?cursor=`; `null` means the end. `limit` defaults to 20
   and caps at 100.
+
+  Checkouts and buyer profiles are genuinely paged. `GET /v1/api-keys` and `GET /v1/webhooks` are
+  not — they answer the whole collection, with `nextCursor: null` and their original `keys` /
+  `endpoints` arrays alongside `data` for callers written before the shapes converged. Read `data`.
+
+  `GET /v1/buyer-sessions` is the exception that has not converged: it answers
+  `{ sessions, vaultEnabled }`, with no `data` and no cursor.
 </ResponseField>
 
 <ResponseField name="Errors" type="{ error: true, message }">
@@ -57,14 +64,22 @@ surfaces do not:
 
 <ResponseField name="End-user isolation" type="subject">
   A key may be bound to one of your end users at creation, after which it sees and creates only
-  that person's rows. `subject` is your own opaque id, accepted on `POST /v1/api-keys`,
-  `POST /v1/checkouts` and `POST /v1/buyer-profiles`. A key without one is tenant-wide. See
-  [End-user isolation](/end-user-isolation).
+  that person's rows. `subject` is your own opaque id — 1 to 200 characters, `""` is a `400` —
+  accepted on `POST /v1/api-keys`, `POST /v1/checkouts` and `POST /v1/buyer-profiles`, filterable on
+  `GET /v1/checkouts?subject=`, and present on the `checkout.status_changed` webhook payload. A key
+  without one is tenant-wide. See [End-user isolation](/end-user-isolation).
+</ResponseField>
+
+<ResponseField name="Strict create bodies" type="unknown fields are a 400">
+  The three create bodies that accept `subject` reject unrecognised top-level fields, so a
+  misspelled `subjectt` fails loudly instead of returning `201` with an untagged row. `target`,
+  `constraints` and `metadata` stay permissive inside.
 </ResponseField>
 
 <ResponseField name="Idempotency" type="Idempotency-Key header">
   `POST /v1/checkouts` only. A replay returns the original checkout with `200`; the same key with
-  a different body is `409`. Keys are namespaced per `(tenant, subject)` and never expire. See
+  a different body is `409`. Keys are namespaced per `(tenant, subject)` and expire 24 hours after
+  the checkout that claimed them was created. See
   [Idempotency](/errors-and-limits#idempotency).
 </ResponseField>
 

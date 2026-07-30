@@ -97,9 +97,9 @@ they are consumed by a browser, not an API client.
 | `200` | Successful read, successful action submit, successful revoke/delete. Also an [idempotent replay](#idempotency) of `POST /v1/checkouts`. |
 | `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
-| `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or belongs to another end user. |
+| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user. |
 | `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; signup closed. |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed. |
 | `404` | Not found, or owned by another tenant — or by another end user. None of the three are distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
 | `409` | The action you are answering is already `submitted`, `declined` or `expired`; or an `Idempotency-Key` was reused with a different body. |
 | `429` | A quota was hit. See below. |
@@ -155,9 +155,10 @@ create you might retry, which is all of them.
 | Situation | Result |
 | --- | --- |
 | New key | `201` and a new checkout, exactly as without the header. |
-| Same key, same body | `200` and the original checkout. |
-| Same key, different body | `409`, and nothing is created. |
+| Same key, same body, inside 24 hours | `200` and the original checkout. |
+| Same key, different body, inside 24 hours | `409`, and nothing is created. |
 | Same key, two concurrent requests | Both get the same checkout — one `201`, one `200`. |
+| Same key, more than 24 hours later | `201` and a **new** checkout. The key was released. |
 | No header, same body twice | Two checkouts. Two purchases. |
 
 ### What "same body" means
@@ -167,7 +168,9 @@ the same request are under no obligation to agree on key order. Defaults are app
 hashing too: omitting `constraints` and sending `"constraints": {}` are the same request.
 
 Reusing a key with a genuinely different body is a caller bug, so it is refused rather than
-quietly answered with a checkout for something else:
+quietly answered with a checkout for something else. Anything other than a fingerprint match is a
+`409` — including the pathological case of a checkout that holds a key but no fingerprint at all,
+which replays nothing rather than replaying for any body you send:
 
 ```json 409
 {
@@ -186,14 +189,27 @@ your retry was the mistake or the key was.
   [end users](/end-user-isolation) may pick the same string — `"order-1"`, a timestamp, a retry
   counter — and neither can replay the other's checkout. A tenant-wide key shares one namespace
   across everything it creates untagged.
-- **There is no expiry.** A key is remembered for as long as the checkout row exists, so a key
-  reused a month later still replays. Make yours unique per *purchase*, not per attempt — your
-  own order reference, or a UUID minted when the user confirmed — and reuse it across the
-  retries of that one purchase.
+- **A key lives 24 hours**, measured from the creation of the checkout that claimed it. Inside the
+  window a retry is a retry. Outside it the key is released and the same string starts a new
+  purchase, which is the same 24 hours Stripe gives you and the same assumption most HTTP clients
+  already make.
+- Release is a background sweep, not a clock read on the request, and it runs hourly — so a key can
+  outlive its window by up to an hour before it stops replaying. Do not build a flow that depends
+  on the boundary landing at a particular second.
+- Expiry frees the key, it does not touch the checkout. The row, its timeline and its receipt stay
+  exactly where they were; only the key and the body fingerprint are cleared off it.
 - The namespace belongs to the account and the end user, never to the credential. Rotate your
-  API key and a replay of yesterday's key still works; two keys bound to *different* subjects
+  API key and a replay of an hour-old key still works; two keys bound to *different* subjects
   never collide.
 - An empty or whitespace-only header is treated as absent.
+
+<Warning>
+**24 hours is a retry window, not a duplicate-purchase guard.** A key you reuse a week later
+buys the item again, with a `201` that looks like the first one. Make yours unique per *purchase* —
+your own order reference, or a UUID minted when the user confirmed — reuse it across the retries of
+that one purchase, and keep your own record of what you have already bought if your flow can come
+back to the same cart tomorrow.
+</Warning>
 
 ### What a replay actually returns
 
@@ -206,9 +222,13 @@ A replay also does not consume quota, does not launch a second browser, and does
 the run.
 
 <Note>
-Idempotency covers **creation only**. It is not a retry of a failed run: once a checkout has
-failed, reusing its key returns that failed checkout forever. To try again, create a new
-checkout with a new key.
+Idempotency covers **creation only**. It is not a retry of a failed run: while the key is still
+live, reusing it on a checkout that has already failed hands you back that same failed checkout
+with a `200`. To try again inside the window, create a new checkout with a new key.
+
+This is also why the window exists. Without it, a failed checkout replayed its own failure for as
+long as the row lived, and a caller that had sensibly derived its key from the purchase had no way
+to retry at all short of inventing a key it had no reason to think it needed.
 
 No other endpoint reads the header. Answering a user action is made safe by its own `409`
 instead — see [The 409s](#the-409s).
@@ -217,7 +237,9 @@ instead — see [The 409s](#the-409s).
 ## Quotas
 
 Two independent per-tenant limits, both enforced at `POST /v1/checkouts`, both returning
-`429`.
+`429`. Per **tenant**, not per end user: `subject` partitions who can see what, never who gets a
+slot, so one end user's parked runs can `429` another's next create. See
+[what isolation does not cover](/end-user-isolation#what-isolation-does-not-cover).
 
 <ResponseField name="Active checkouts" type="5 concurrent (default)">
   ```json
@@ -311,6 +333,8 @@ set it.
 | `target.merchantContext` | 4000 characters. |
 | `target.allowedDomains` | Max 10 entries, hostnames only — no scheme, no path. |
 | `target.countryCode` | Two letters, ISO 3166-1 alpha-2. Inferred from the URL's ccTLD when omitted. |
+| `subject` (checkouts, buyer profiles, API keys) | 1 to 200 characters after trimming. Empty or whitespace-only is a `400`. |
+| Unknown top-level fields on a create body | Refused. `target`, `constraints` and `metadata` stay permissive inside. |
 | `label` (API keys, webhooks) | 200 characters. |
 | `name` (signup) | 120 characters. `email`, 200. |
 | `limit` (list endpoints) | Defaults to 20. Must be an integer from 1 to 100; anything else is a `400`. |
@@ -341,12 +365,12 @@ them rather than discover them.
 
   <Accordion title="No retry, replay or clone of a checkout">
     A failed checkout is final. Create a new one with the same body — and a new
-    [`Idempotency-Key`](#idempotency), since reusing the old one just hands you back the failure.
-    `Idempotency-Key` deduplicates the *call*, not the run.
+    [`Idempotency-Key`](#idempotency), since reusing the old one hands you back the failure for as
+    long as that key is still live. `Idempotency-Key` deduplicates the *call*, not the run.
   </Accordion>
 
   <Accordion title="No search across checkouts">
-    List supports `status`, `limit` and `cursor`. You cannot filter by `metadata`, by
+    List supports `subject`, `status`, `limit` and `cursor`. You cannot filter by `metadata`, by
     merchant, or by date range — keep your own index keyed on the checkout id you got at
     creation.
   </Accordion>

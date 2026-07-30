@@ -54,7 +54,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
 
 ```json List → 200
 {
-  "endpoints": [
+  "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
       "url": "https://hooks.example.com/checkoutvia",
@@ -63,13 +63,18 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
       "lastDeliveryStatus": 200,
       "createdAt": "2026-07-28T14:03:55.204Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
 `lastDeliveryStatus` is the raw HTTP status your endpoint last returned. It is the fastest
 way to notice you have been 500ing for a day. Revoked endpoints disappear from the list and
 stop receiving deliveries immediately.
+
+Read the array from `data`, the field the checkout and buyer-profile lists also use. The same array
+is returned as `endpoints` too — the original field name, kept for existing callers — and
+`nextCursor` is always `null` here because the collection is not paged.
 
 ## The event
 
@@ -81,6 +86,7 @@ One event type exists today.
   "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
   "status": "awaiting_user_action",
   "failureReason": null,
+  "subject": "user_a91f",
   "createdAt": "2026-07-29T09:14:45.622Z"
 }
 ```
@@ -99,10 +105,26 @@ One event type exists today.
   Set only when `status` is `failed`. One of `max_cost_exceeded`, `user_cancelled`,
   `user_action_expired`, `automation_failed`.
 </ResponseField>
+<ResponseField name="subject" type="string">
+  **Omitted** when the checkout is not tagged to an end user. Your own id for that person when it
+  is. See [End-user isolation](/end-user-isolation).
+
+  An endpoint is tenant-wide — it receives every end user's transitions — so this is what lets you
+  route a delivery to the right person: notify that user, wake that user's job, write to that user's
+  row. Without it the only way to find out whose run this was would be a call back to
+  `GET /v1/checkouts/{checkoutId}` with a tenant-wide key, or your own map from checkout id to user
+  kept since creation.
+</ResponseField>
 <ResponseField name="createdAt" type="string">
   When the transition was dispatched — stamped once, so a retried delivery carries the
   original event time, not the retry time.
 </ResponseField>
+
+<Note>
+`subject` is a routing hint, not an authorisation decision. It is your own string coming back to
+you, and the delivery is only trustworthy at all once you have
+[verified the signature](#verifying-the-signature).
+</Note>
 
 ### Which transitions fire
 

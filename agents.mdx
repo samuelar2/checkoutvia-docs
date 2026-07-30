@@ -75,7 +75,7 @@ invent a fresh one on each attempt, which is exactly the same as not sending one
 in the tool schema.
 </Warning>
 
-Two more properties worth knowing before you rely on it:
+Three more properties worth knowing before you rely on it:
 
 - **A replay returns the checkout as it is now**, not the original `queued` response. A retry
   ninety seconds later comes back `running`, possibly with a `pendingUserAction` already waiting.
@@ -84,10 +84,16 @@ Two more properties worth knowing before you rely on it:
   already refers to. That is a bug in your handler — usually a key derived from the user's turn
   rather than from the purchase — surfaced rather than silently resolved in favour of whichever
   body arrived first.
+- **A key lives 24 hours**, measured from the creation of the checkout that claimed it. That covers
+  every retry your framework will ever make in one turn, and then some. It is a retry window and not
+  a duplicate-purchase guard: the same key next week buys the item again, so if your flow can come
+  back to the same cart tomorrow, keep your own record of what you have already bought.
 
-It does not make a *failed run* retryable: reusing that key returns the failure for good. A real
-retry is a new checkout with a new key. Full behaviour, including how the body is hashed and how
-keys are namespaced per end user, in [Idempotency](/errors-and-limits#idempotency).
+It does not make a *failed run* retryable: while the key is still live, reusing it hands you back
+the failure. A real retry is a new checkout with a new key.
+
+Full behaviour, including how the body is hashed and how keys are namespaced per end user, in
+[Idempotency](/errors-and-limits#idempotency).
 
 ## Give the agent a narrow key
 
@@ -594,8 +600,8 @@ authorise a payment.
 | `cancelled` | You called `DELETE /v1/checkouts/{id}`. |
 
 There is no retry, replay or clone of a finished run. Create a new checkout with the same body —
-and a **new** `Idempotency-Key`, because the old one now points at the failure and will keep
-returning it.
+and a **new** `Idempotency-Key`, because the old one points at the failure and keeps returning it
+for as long as it is live.
 
 ## The zero-code option: MCP
 

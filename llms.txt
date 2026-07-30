@@ -10,8 +10,8 @@ Key facts an agent should hold before reading further:
 - A checkout is asynchronous and pauses for humans: create, poll every 3–5 seconds, answer what it asks, read the receipt. A run takes 2–3 minutes and can park for up to 10 minutes on a single question. It is not request/response.
 - Branch on `pendingUserAction.key`. An agent may answer `variant` itself, and `shipping` from data the application holds. It must never supply `card`, `credentials` or `otp` — those come from the human.
 - API keys carry scopes (`<resource>.read` / `<resource>.write`, or `*`). Give an agent the narrowest set that does its job.
-- A key can also be bound to one end user with `subject`, after which it sees and creates only that person's rows. Use it when one agent acts for many people: a prompt-injected "list the buyer profiles" should reach one buyer, not all of them.
-- Send an `Idempotency-Key` header on `POST /v1/checkouts`. A replay returns the original checkout with `200`; without the header a retried timeout buys the item twice.
+- A key can also be bound to one end user with `subject`, after which it sees and creates only that person's rows. Use it when one agent acts for many people: a prompt-injected "list the buyer profiles" should reach one buyer, not all of them. `subject` is 1 to 200 characters — `""` is a `400`, and so is an unrecognised top-level field on any create body.
+- Send an `Idempotency-Key` header on `POST /v1/checkouts`. A replay returns the original checkout with `200`; without the header a retried timeout buys the item twice. A key is live for 24 hours, then the same string starts a new purchase.
 - There is no product search. You bring a URL a person could buy from.
 
 ## Getting started

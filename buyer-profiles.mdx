@@ -51,19 +51,21 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 ## Fields
 
 Every field is optional — the API will happily store `{}` — but the agent can only fill what
-you gave it.
+you gave it. A field it does not recognise is a different matter: the body is strict, so a typo is
+a `400` rather than a stored profile missing the thing you thought you set.
 
 <ResponseField name="label" type="string">
   Yours, for your own bookkeeping. Never sent to a merchant.
 </ResponseField>
 
 <ResponseField name="subject" type="string">
-  Your own id for the end user this profile *is*. Optional, max 200 characters, opaque to us,
+  Your own id for the end user this profile *is*. Optional, 1 to 200 characters, opaque to us,
   never sent to a merchant. Set it and an API key bound to that subject sees this profile while
   no other end user's key can — see [End-user isolation](/end-user-isolation).
 
   It comes back as `null` on an untagged profile, and it **cannot be changed after creation**:
-  `PATCH` with `subject` is a `400`, not a silent no-op. Decide before you create.
+  `PATCH` with `subject` is a `400`, not a silent no-op. Decide before you create. `""` is a `400`
+  as well — send a real id or omit the field.
 </ResponseField>
 
 <ResponseField name="name" type="object">
@@ -247,5 +249,9 @@ unrelated end users would share their merchant logins. One profile per end user.
 If you serve many end users, say which one each profile belongs to: set `subject` at creation
 and issue your agent a key bound to it. That turns "one profile per end user" from a convention
 you maintain into a fence the API enforces — a key for one buyer cannot read, patch, delete or
-ship to another's profile, and cannot list them either. See
-[End-user isolation](/end-user-isolation).
+ship to another's profile, and cannot list them either.
+
+The fence holds from your admin key too, which is where it matters for stored logins: a checkout
+tagged `subject: "user_a91f"` cannot be pointed at a profile tagged for someone else, so a run can
+never write one person's merchant session onto another person's profile. Naming both is a `403`. See
+[End-user isolation](/end-user-isolation#which-buyer-profile-a-checkout-may-use).

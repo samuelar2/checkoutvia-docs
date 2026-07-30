@@ -719,7 +719,7 @@ says yes — and reuse it across retries of that intent. A model asked for an id
 invent a fresh one on each attempt, which is exactly the same as not sending one. Do not put it
 in the tool schema.
 
-Two more properties worth knowing before you rely on it:
+Three more properties worth knowing before you rely on it:
 
 - **A replay returns the checkout as it is now**, not the original `queued` response. A retry
   ninety seconds later comes back `running`, possibly with a `pendingUserAction` already waiting.
@@ -728,10 +728,16 @@ Two more properties worth knowing before you rely on it:
   already refers to. That is a bug in your handler — usually a key derived from the user's turn
   rather than from the purchase — surfaced rather than silently resolved in favour of whichever
   body arrived first.
+- **A key lives 24 hours**, measured from the creation of the checkout that claimed it. That covers
+  every retry your framework will ever make in one turn, and then some. It is a retry window and not
+  a duplicate-purchase guard: the same key next week buys the item again, so if your flow can come
+  back to the same cart tomorrow, keep your own record of what you have already bought.
 
-It does not make a *failed run* retryable: reusing that key returns the failure for good. A real
-retry is a new checkout with a new key. Full behaviour, including how the body is hashed and how
-keys are namespaced per end user, in [Idempotency](/errors-and-limits#idempotency).
+It does not make a *failed run* retryable: while the key is still live, reusing it hands you back
+the failure. A real retry is a new checkout with a new key.
+
+Full behaviour, including how the body is hashed and how keys are namespaced per end user, in
+[Idempotency](/errors-and-limits#idempotency).
 
 ## Give the agent a narrow key
 
@@ -1232,8 +1238,8 @@ authorise a payment.
 | `cancelled` | You called `DELETE /v1/checkouts/{id}`. |
 
 There is no retry, replay or clone of a finished run. Create a new checkout with the same body —
-and a **new** `Idempotency-Key`, because the old one now points at the failure and will keep
-returning it.
+and a **new** `Idempotency-Key`, because the old one points at the failure and keeps returning it
+for as long as it is live.
 
 ## The zero-code option: MCP
 
@@ -1453,6 +1459,9 @@ revoke account keys, cannot read `/v1/usage`, cannot manage webhooks, and cannot
 anybody else. A key without one is tenant-wide — which is what every key issued before this
 existed already is, so the mechanism is inert until you use it.
 
+Send a real id or omit the field: `""` is a `400`, and a misspelled `subjectt` is a `400` too, so
+there is no body that returns `201` with a key you believe is bound and is not.
+
 Full contract, including what it deliberately does not cover:
 [End-user isolation](/end-user-isolation).
 
@@ -1487,7 +1496,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
 
 ```json List → 200
 {
-  "keys": [
+  "data": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
       "label": "ci",
@@ -1499,9 +1508,14 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
       "revokedAt": null,
       "createdAt": "2026-07-29T09:02:10.771Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
+
+Read the array from `data`, the field the checkout and buyer-profile lists also use. The same array
+comes back as `keys` too — the original field name, kept for existing callers — and `nextCursor` is
+always `null` because this collection is not paged.
 
 Listing never returns a secret — the `key` field exists only on the creation response. It does
 return `scopes` and `subject`, which is how you audit what each outstanding key can reach and
@@ -1559,8 +1573,9 @@ The full refusal, including which of the two reasons applied, is documented in
 
 ### Minting a live key
 
-A sandbox-only account **cannot create one**. `POST /v1/api-keys` with `{"mode":"live"}`
-returns `403`:
+Two independent things have to be true, and each refusal is a `403`.
+
+**The account must be activated.** A sandbox-only account cannot create a live key at all:
 
 ```json
 {
@@ -1569,8 +1584,24 @@ returns `403`:
 }
 ```
 
-Once the account is activated, `{"mode":"live"}` works and only then can any of its keys
-reach a real merchant.
+**The calling key must itself be live.** A `ck_test_` key cannot issue a `ck_live_` one, however
+activated the account is and however broad the test key's scopes are:
+
+```json
+{
+  "error": true,
+  "message": "A test key cannot issue a live key. Use a live key, or activate the account."
+}
+```
+
+That second rule is the same one that governs scopes and `subject`: authority passes down, never
+sideways. Without it, the sandbox confinement a test key exists to provide would be one `POST` deep
+— a tenant that deliberately handed its agent a test key could be talked into minting a live one,
+and every guarantee on this page would evaporate. A live key minting a test key is fine; that is
+narrowing.
+
+With an activated account and a live key in hand, `{"mode":"live"}` works, and only then can any of
+its keys reach a real merchant.
 
 TIP:
 This gives you a genuinely spend-proof credential for CI, staging, and anything running
@@ -2421,7 +2452,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
 
 ```json List → 200
 {
-  "endpoints": [
+  "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
       "url": "https://hooks.example.com/checkoutvia",
@@ -2430,13 +2461,18 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
       "lastDeliveryStatus": 200,
       "createdAt": "2026-07-28T14:03:55.204Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
 `lastDeliveryStatus` is the raw HTTP status your endpoint last returned. It is the fastest
 way to notice you have been 500ing for a day. Revoked endpoints disappear from the list and
 stop receiving deliveries immediately.
+
+Read the array from `data`, the field the checkout and buyer-profile lists also use. The same array
+is returned as `endpoints` too — the original field name, kept for existing callers — and
+`nextCursor` is always `null` here because the collection is not paged.
 
 ## The event
 
@@ -2448,6 +2484,7 @@ One event type exists today.
   "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
   "status": "awaiting_user_action",
   "failureReason": null,
+  "subject": "user_a91f",
   "createdAt": "2026-07-29T09:14:45.622Z"
 }
 ```
@@ -2462,9 +2499,24 @@ One event type exists today.
 - **failureReason** (string | null):
   Set only when `status` is `failed`. One of `max_cost_exceeded`, `user_cancelled`,
   `user_action_expired`, `automation_failed`.
+- **subject** (string):
+  **Omitted** when the checkout is not tagged to an end user. Your own id for that person when it
+  is. See [End-user isolation](/end-user-isolation).
+
+  An endpoint is tenant-wide — it receives every end user's transitions — so this is what lets you
+  route a delivery to the right person: notify that user, wake that user's job, write to that user's
+  row. Without it the only way to find out whose run this was would be a call back to
+  `GET /v1/checkouts/{checkoutId}` with a tenant-wide key, or your own map from checkout id to user
+  kept since creation.
+
 - **createdAt** (string):
   When the transition was dispatched — stamped once, so a retried delivery carries the
   original event time, not the retry time.
+
+NOTE:
+`subject` is a routing hint, not an authorisation decision. It is your own string coming back to
+you, and the delivery is only trustworthy at all once you have
+[verified the signature](#verifying-the-signature).
 
 ### Which transitions fire
 
@@ -2786,18 +2838,20 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 ## Fields
 
 Every field is optional — the API will happily store `{}` — but the agent can only fill what
-you gave it.
+you gave it. A field it does not recognise is a different matter: the body is strict, so a typo is
+a `400` rather than a stored profile missing the thing you thought you set.
 
 - **label** (string):
   Yours, for your own bookkeeping. Never sent to a merchant.
 
 - **subject** (string):
-  Your own id for the end user this profile *is*. Optional, max 200 characters, opaque to us,
+  Your own id for the end user this profile *is*. Optional, 1 to 200 characters, opaque to us,
   never sent to a merchant. Set it and an API key bound to that subject sees this profile while
   no other end user's key can — see [End-user isolation](/end-user-isolation).
 
   It comes back as `null` on an untagged profile, and it **cannot be changed after creation**:
-  `PATCH` with `subject` is a `400`, not a silent no-op. Decide before you create.
+  `PATCH` with `subject` is a `400`, not a silent no-op. Decide before you create. `""` is a `400`
+  as well — send a real id or omit the field.
 
 - **name** (object):
   `{ first, last }`. Used for the merchant's name fields, and as the cardholder name at the
@@ -2971,8 +3025,12 @@ unrelated end users would share their merchant logins. One profile per end user.
 If you serve many end users, say which one each profile belongs to: set `subject` at creation
 and issue your agent a key bound to it. That turns "one profile per end user" from a convention
 you maintain into a fence the API enforces — a key for one buyer cannot read, patch, delete or
-ship to another's profile, and cannot list them either. See
-[End-user isolation](/end-user-isolation).
+ship to another's profile, and cannot list them either.
+
+The fence holds from your admin key too, which is where it matters for stored logins: a checkout
+tagged `subject: "user_a91f"` cannot be pointed at a profile tagged for someone else, so a run can
+never write one person's merchant session onto another person's profile. Naming both is a `403`. See
+[End-user isolation](/end-user-isolation#which-buyer-profile-a-checkout-may-use).
 
 ------------------------------------------------------------------------------
 # Buyer sessions
@@ -3208,19 +3266,44 @@ life of the key, like `mode` and `scopes`. The call at the top of this page answ
 audit, from your admin key, which of your outstanding keys act for whom.
 
 - **subject** (string):
-  Max 200 characters. Opaque to us: never parsed, never validated against anything, never sent
-  to a merchant, and never typed into a checkout form. There is no registry of subjects and no
-  endpoint that lists them — a subject exists because a row or a key mentions it.
+  1 to 200 characters, trimmed. Opaque to us: never parsed, never validated against anything,
+  never sent to a merchant, and never typed into a checkout form. There is no registry of
+  subjects and no endpoint that lists them — a subject exists because a row or a key mentions it.
 
   Prefer your own internal id over an email address or a name. It is stored with us and echoed
   back on reads, and an opaque id is the version of that data you would rather have in both
   places.
 
 WARNING:
-Do not send `"subject": ""`. An empty string is accepted, and then behaves like no subject at
-all: a key created with it acts tenant-wide, and a row created with it is invisible to every
-bound key while remaining visible to tenant-wide ones. `subject: user.id ?? ""` is the shape of
-this bug. Send a real id or omit the field.
+**`subject: ""` is refused.** An empty or whitespace-only string is a `400` on every body that
+takes the field, not a subject that quietly means nothing.
+
+`subject: user.id ?? ""` is the shape this protects you from. An empty string is falsy, so it
+used to mint a key that looked bound and acted tenant-wide, and tag rows that no bound key could
+ever see — an opt-in that silently no-ops is worse than no opt-in. It now fails at the call site,
+where you can still fix it.
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": ["subject"]
+    }
+  ]
+}
+```
+
+`message` is `Invalid profile` on `POST /v1/buyer-profiles` and `Invalid request` on the other
+two; the `issues` are the same. Surrounding whitespace is stripped before the value is stored, so
+`" user_a91f "` and `"user_a91f"` are the same subject rather than two.
 
 ## What a bound key can reach
 
@@ -3230,7 +3313,7 @@ account-level questions refuse it outright.
 | Call | On a bound key |
 | --- | --- |
 | `POST /v1/checkouts` | Allowed. The checkout is stamped with the key's subject. |
-| `GET /v1/checkouts` | Only that subject's checkouts. Another end user's runs are not in the page — not redacted, absent. |
+| `GET /v1/checkouts` | Only that subject's checkouts. Another end user's runs are not in the page — not redacted, absent. `?subject=` naming anyone else is a **`403`**. |
 | `GET`/`DELETE /v1/checkouts/{id}` | `404 Checkout not found` for another subject's checkout. |
 | `POST /v1/checkouts/{id}/actions/{actionId}` | `404 Checkout not found` — you cannot answer a question raised on someone else's run. |
 | `POST /v1/checkouts/{id}/embed-token` | `404 Checkout not found` — you cannot watch someone else's browser. |
@@ -3245,8 +3328,9 @@ account-level questions refuse it outright.
 | `GET /v1/usage` | **`403`** — billing is between us and you. |
 | `POST`/`GET`/`DELETE /v1/webhooks` | **`403`** — endpoints receive every end user's transitions. |
 
-The four `403`s are all the same judgement: those calls answer questions about the *account*,
-not about a buyer. An end user's key enumerating its siblings, revoking the account's own key,
+The four account-level `403`s — the key list, revocation, usage, webhooks — are all the same
+judgement: those calls answer questions about the *account*, not about a buyer. An end user's key
+enumerating its siblings, revoking the account's own key,
 reading the account's total spend, or subscribing to everyone's checkout activity would each be
 a leak between your own customers.
 
@@ -3271,19 +3355,45 @@ This is the same rule that already governs [scopes](/authentication#scopes) and
 `mode`: a key can only ever hand out authority it already holds. Without it, one `POST` turns a
 single buyer's credential into the account's.
 
-### Borrowing another buyer's stored address
+## Which buyer profile a checkout may use
 
-`buyerProfileId` on `POST /v1/checkouts` is resolved through the same fence, so a bound key
-cannot attach an end user it does not own:
+`buyerProfileId` on `POST /v1/checkouts` is validated against **the checkout's** subject, not the
+authenticating key's. That distinction is the whole point: a tenant-wide admin key passes any
+key-level fence trivially, so a check written against the key would have let one `POST` create a
+checkout stamped `subject: "user_bob"` while spending Alice's stored address — handing her address
+to a merchant, her order to a stranger, and writing any merchant login that run captured back onto
+her profile.
 
-```json 400
+| The profile is tagged | The checkout is tagged | Result |
+| --- | --- | --- |
+| another end user | anything, on a **bound** key | `400 buyerProfileId not found` |
+| `user_alice` | `user_bob` | `403`, naming both subjects |
+| not at all (shared) | `user_bob` | Allowed |
+| `user_alice` | not at all | Allowed |
+
+```json 400 — a bound key reaching for another end user's profile
 { "error": true, "message": "buyerProfileId not found" }
 ```
 
-It is a `400` rather than a `403` because from that key's position the profile genuinely does
-not exist — the ownership check and the existence check are the same query. Worth stopping on:
-without it, one agent could ship a parcel to another customer's home address, which hands their
-address to a merchant and their order to a stranger.
+```json 403 — a tenant-wide key mixing two end users
+{
+  "error": true,
+  "message": "buyerProfileId belongs to subject 'user_alice', but this checkout is for 'user_bob'."
+}
+```
+
+The first is a `400` rather than a `403` because from a bound key's position the profile genuinely
+does not exist — the ownership check and the existence check are the same query, and a `403` would
+confirm that some other end user has a profile by that id.
+
+NOTE:
+**An untagged profile with a tagged checkout stays legal**, and so does the reverse. Only a
+genuine mismatch between two different end users is refused.
+
+That is deliberate: adoption is incremental. Profiles you created before you started tagging have
+no subject, a shared operations address is a reasonable thing to keep untagged, and refusing those
+combinations would mean no tenant could turn `subject` on without a backfill it has no endpoint
+for.
 
 ## Tagging rows from a tenant-wide key
 
@@ -3312,9 +3422,6 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
   }'
 ```
 
-A serialized checkout carries `subject` when it is set, and omits the field entirely when it is
-not. A buyer profile always carries it, `null` when the profile is not tagged.
-
 On a bound key the field is redundant but permitted: sending the key's own subject is fine,
 sending any other value is a `403`.
 
@@ -3326,6 +3433,72 @@ TIP:
 Tagging from an admin key gets you the audit trail — you can answer "what has this user bought"
 — without getting you the containment. The agent still holds a key that can read everyone. If
 the point is to survive a prompt injection, the agent needs a bound key.
+
+### A typo cannot produce an untagged row
+
+All three bodies that accept `subject` — `POST /v1/api-keys`, `POST /v1/checkouts` and
+`POST /v1/buyer-profiles` — reject unknown top-level fields. A misspelled `subjectt` is a `400`:
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    {
+      "code": "unrecognized_keys",
+      "keys": ["subjectt"],
+      "path": [],
+      "message": "Unrecognized key(s) in object: 'subjectt'"
+    }
+  ]
+}
+```
+
+This is the difference between a typo that fails loudly and a `201` carrying an untagged row that
+every key on the account can read. A permissive schema drops what it does not recognise, and the
+field most worth misspelling here is the one that decides who can see the row.
+
+Nested objects stay permissive on purpose — `target`, `constraints` and `metadata` are extension
+points, and unknown keys inside them are ignored rather than refused. The strictness is at the top
+level, where `subject` lives.
+
+### How `subject` comes back
+
+Three shapes, and they differ. Worth reading once if you are writing a client:
+
+| Read | Convention |
+| --- | --- |
+| A checkout, from create / get / an action submit | Present when set, **field absent** when not. |
+| A checkout **list** row | Same: present when set, absent when not. |
+| A buyer profile, from any endpoint | **Always present**, `null` when untagged. |
+| An API key, from `POST /v1/api-keys` | Present only when the new key is bound. |
+| An API key, from `GET /v1/api-keys` | **Always present**, `null` for a tenant-wide key. |
+
+Read it with a null-and-absent-tolerant accessor rather than a presence check, and none of this
+matters.
+
+## Listing one end user's runs
+
+`GET /v1/checkouts?subject=user_a91f` narrows the list to one end user, so a tenant that tags from
+an admin key can answer "what is this person's agent doing" without fetching every checkout:
+
+```bash
+curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $CKV_ADMIN_KEY"
+```
+
+The filter composes with `status`, `limit` and `cursor`. Rows carry `subject` when the checkout has
+one, so you can also read it off an unfiltered page.
+
+A bound key does not need the parameter — its page is already narrowed to one person — and asking
+for somebody else's is refused rather than ignored:
+
+```json 403
+{ "error": true, "message": "This API key is bound to subject 'user_a91f' and cannot act for another." }
+```
+
+Passing its **own** subject is fine, which means the same client code can run against either kind
+of key. There is still no way to list the subjects you have used: that list is your user table.
 
 ## A profile cannot be reassigned
 
@@ -3363,23 +3536,21 @@ Honest boundaries. These are tenant-level facts, and a `subject` does not partit
     before the subject model is. See [Quotas](/errors-and-limits#quotas).
 
   
-#### Webhooks are tenant-wide and carry no subject
+#### Webhook endpoints are tenant-wide
     One endpoint receives the status transitions of every checkout on the account, for every end
-    user, and the payload is `{ type, checkoutId, status, failureReason, createdAt }` — there is
-    no `subject` on it. To route a delivery to the right user, resolve
-    `GET /v1/checkouts/{checkoutId}` with a tenant-wide key and read `subject` off the checkout,
-    or keep your own map from checkout id to user at creation time. Keeping the map is cheaper
-    and does not need a second call.
+    user. There is no per-subject endpoint, no per-subject delivery filter, and a bound key cannot
+    register or read an endpoint at all (`403`).
 
-    The same applies to `GET /v1/checkouts`: the list summary carries no `subject` and there is no
-    `?subject=` filter, so on a tenant-wide key you cannot tell one end user's runs from another's
-    without fetching each one. On a bound key you do not need to — the page only contains its own.
+    The payload does name the end user — `subject` is on it whenever the checkout has one — so
+    routing a delivery to the right person needs neither a callback nor a map of your own. See
+    [the event](/webhooks#the-event).
 
   
 #### Usage and billing are the account's
     `GET /v1/usage` reports completed checkouts and gross merchandise volume for the tenant.
     There is no per-subject breakdown, and a bound key cannot read it at all. Attribute spend
-    yourself from the `subject` on each checkout.
+    yourself from the `subject` on each checkout — `?subject=` on the checkout list is the cheapest
+    way to gather them.
 
   
 #### Key mode is a separate axis
@@ -3437,13 +3608,17 @@ per tenant. Two of your end users independently choosing `"order-1"` — a times
 counter, a cart id — is ordinary, and they have no way to coordinate because they cannot see
 each other. Each gets their own checkout; neither can replay the other's.
 
+The window is 24 hours, and it is per key rather than per subject: after that the same string is
+free again for whoever sends it next.
+
 ## Errors
 
 | Status | Message | Cause |
 | --- | --- | --- |
-| `400` | `Invalid request` / `Invalid profile` with `issues` | `subject` over 200 characters, or sent to `PATCH /v1/buyer-profiles/{id}` |
+| `400` | `Invalid request` / `Invalid profile` with `issues` | `subject` empty, whitespace-only, or over 200 characters; an unknown top-level field such as `subjectt`; or `subject` sent to `PATCH /v1/buyer-profiles/{id}` |
 | `400` | `buyerProfileId not found` | A bound key attaching another end user's profile |
-| `403` | `This API key is bound to subject '<s>' and cannot act for another.` | `POST /v1/checkouts` or `POST /v1/buyer-profiles` naming a different subject |
+| `403` | `buyerProfileId belongs to subject '<a>', but this checkout is for '<b>'.` | A tenant-wide key mixing one end user's profile into another's checkout |
+| `403` | `This API key is bound to subject '<s>' and cannot act for another.` | `POST /v1/checkouts` or `POST /v1/buyer-profiles` naming a different subject, or `GET /v1/checkouts?subject=` naming one |
 | `403` | `This API key is bound to subject '<s>' and cannot issue keys for another.` | `POST /v1/api-keys` naming a different subject |
 | `403` | `A subject-bound key cannot list account keys.` | `GET /v1/api-keys` |
 | `403` | `A subject-bound key cannot revoke account keys.` | `DELETE /v1/api-keys/{id}` |
@@ -3571,6 +3746,10 @@ live; only the target URLs and the key change.
 
     `{"mode":"test"}` works, and you can create as many test keys as you like.
 
+    Two separate refusals live here, and both are `403`: this one, about the account, and a second
+    about the credential — a `ck_test_` key cannot issue a `ck_live_` key even on an activated
+    account. See [minting a live key](/authentication#minting-a-live-key).
+
 ## Signing up
 
 ```bash
@@ -3646,7 +3825,13 @@ to target, what card instruments you will use, and what your volume looks like.
 
 ### After activation
 
-- `sandboxOnly` is false, and `POST /v1/api-keys` with `{"mode":"live"}` starts working.
+- `sandboxOnly` is false, so the account-level refusal on `POST /v1/api-keys` with
+  `{"mode":"live"}` is gone.
+- **Ask us for your first `ck_live_` key while you are arranging activation.** A `ck_test_` key
+  cannot issue a live one — authority passes down, never sideways — and every key a self-serve
+  signup has is a test key, so that first live credential has to come from us. After that you can
+  mint as many live keys as you like from it. See
+  [minting a live key](/authentication#minting-a-live-key).
 - Your existing `ck_test_` keys are **still confined to sandbox merchants**. That is not a
   leftover restriction to work around — it is the point. Keep them for CI and staging.
 - Point production at a new `ck_live_` key. Nothing else in your integration changes.
@@ -3757,9 +3942,9 @@ they are consumed by a browser, not an API client.
 | `200` | Successful read, successful action submit, successful revoke/delete. Also an [idempotent replay](#idempotency) of `POST /v1/checkouts`. |
 | `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
-| `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or belongs to another end user. |
+| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user. |
 | `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; signup closed. |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed. |
 | `404` | Not found, or owned by another tenant — or by another end user. None of the three are distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
 | `409` | The action you are answering is already `submitted`, `declined` or `expired`; or an `Idempotency-Key` was reused with a different body. |
 | `429` | A quota was hit. See below. |
@@ -3814,9 +3999,10 @@ create you might retry, which is all of them.
 | Situation | Result |
 | --- | --- |
 | New key | `201` and a new checkout, exactly as without the header. |
-| Same key, same body | `200` and the original checkout. |
-| Same key, different body | `409`, and nothing is created. |
+| Same key, same body, inside 24 hours | `200` and the original checkout. |
+| Same key, different body, inside 24 hours | `409`, and nothing is created. |
 | Same key, two concurrent requests | Both get the same checkout — one `201`, one `200`. |
+| Same key, more than 24 hours later | `201` and a **new** checkout. The key was released. |
 | No header, same body twice | Two checkouts. Two purchases. |
 
 ### What "same body" means
@@ -3826,7 +4012,9 @@ the same request are under no obligation to agree on key order. Defaults are app
 hashing too: omitting `constraints` and sending `"constraints": {}` are the same request.
 
 Reusing a key with a genuinely different body is a caller bug, so it is refused rather than
-quietly answered with a checkout for something else:
+quietly answered with a checkout for something else. Anything other than a fingerprint match is a
+`409` — including the pathological case of a checkout that holds a key but no fingerprint at all,
+which replays nothing rather than replaying for any body you send:
 
 ```json 409
 {
@@ -3845,14 +4033,26 @@ your retry was the mistake or the key was.
   [end users](/end-user-isolation) may pick the same string — `"order-1"`, a timestamp, a retry
   counter — and neither can replay the other's checkout. A tenant-wide key shares one namespace
   across everything it creates untagged.
-- **There is no expiry.** A key is remembered for as long as the checkout row exists, so a key
-  reused a month later still replays. Make yours unique per *purchase*, not per attempt — your
-  own order reference, or a UUID minted when the user confirmed — and reuse it across the
-  retries of that one purchase.
+- **A key lives 24 hours**, measured from the creation of the checkout that claimed it. Inside the
+  window a retry is a retry. Outside it the key is released and the same string starts a new
+  purchase, which is the same 24 hours Stripe gives you and the same assumption most HTTP clients
+  already make.
+- Release is a background sweep, not a clock read on the request, and it runs hourly — so a key can
+  outlive its window by up to an hour before it stops replaying. Do not build a flow that depends
+  on the boundary landing at a particular second.
+- Expiry frees the key, it does not touch the checkout. The row, its timeline and its receipt stay
+  exactly where they were; only the key and the body fingerprint are cleared off it.
 - The namespace belongs to the account and the end user, never to the credential. Rotate your
-  API key and a replay of yesterday's key still works; two keys bound to *different* subjects
+  API key and a replay of an hour-old key still works; two keys bound to *different* subjects
   never collide.
 - An empty or whitespace-only header is treated as absent.
+
+WARNING:
+**24 hours is a retry window, not a duplicate-purchase guard.** A key you reuse a week later
+buys the item again, with a `201` that looks like the first one. Make yours unique per *purchase* —
+your own order reference, or a UUID minted when the user confirmed — reuse it across the retries of
+that one purchase, and keep your own record of what you have already bought if your flow can come
+back to the same cart tomorrow.
 
 ### What a replay actually returns
 
@@ -3865,9 +4065,13 @@ A replay also does not consume quota, does not launch a second browser, and does
 the run.
 
 NOTE:
-Idempotency covers **creation only**. It is not a retry of a failed run: once a checkout has
-failed, reusing its key returns that failed checkout forever. To try again, create a new
-checkout with a new key.
+Idempotency covers **creation only**. It is not a retry of a failed run: while the key is still
+live, reusing it on a checkout that has already failed hands you back that same failed checkout
+with a `200`. To try again inside the window, create a new checkout with a new key.
+
+This is also why the window exists. Without it, a failed checkout replayed its own failure for as
+long as the row lived, and a caller that had sensibly derived its key from the purchase had no way
+to retry at all short of inventing a key it had no reason to think it needed.
 
 No other endpoint reads the header. Answering a user action is made safe by its own `409`
 instead — see [The 409s](#the-409s).
@@ -3875,7 +4079,9 @@ instead — see [The 409s](#the-409s).
 ## Quotas
 
 Two independent per-tenant limits, both enforced at `POST /v1/checkouts`, both returning
-`429`.
+`429`. Per **tenant**, not per end user: `subject` partitions who can see what, never who gets a
+slot, so one end user's parked runs can `429` another's next create. See
+[what isolation does not cover](/end-user-isolation#what-isolation-does-not-cover).
 
 - **Active checkouts** (5 concurrent (default)):
   ```json
@@ -3965,6 +4171,8 @@ set it.
 | `target.merchantContext` | 4000 characters. |
 | `target.allowedDomains` | Max 10 entries, hostnames only — no scheme, no path. |
 | `target.countryCode` | Two letters, ISO 3166-1 alpha-2. Inferred from the URL's ccTLD when omitted. |
+| `subject` (checkouts, buyer profiles, API keys) | 1 to 200 characters after trimming. Empty or whitespace-only is a `400`. |
+| Unknown top-level fields on a create body | Refused. `target`, `constraints` and `metadata` stay permissive inside. |
 | `label` (API keys, webhooks) | 200 characters. |
 | `name` (signup) | 120 characters. `email`, 200. |
 | `limit` (list endpoints) | Defaults to 20. Must be an integer from 1 to 100; anything else is a `400`. |
@@ -3995,12 +4203,12 @@ them rather than discover them.
   
 #### No retry, replay or clone of a checkout
     A failed checkout is final. Create a new one with the same body — and a new
-    [`Idempotency-Key`](#idempotency), since reusing the old one just hands you back the failure.
-    `Idempotency-Key` deduplicates the *call*, not the run.
+    [`Idempotency-Key`](#idempotency), since reusing the old one hands you back the failure for as
+    long as that key is still live. `Idempotency-Key` deduplicates the *call*, not the run.
 
   
 #### No search across checkouts
-    List supports `status`, `limit` and `cursor`. You cannot filter by `metadata`, by
+    List supports `subject`, `status`, `limit` and `cursor`. You cannot filter by `metadata`, by
     merchant, or by date range — keep your own index keyed on the checkout id you got at
     creation.
 
@@ -4289,9 +4497,16 @@ surfaces do not:
   and defaults to `"USD"` where you may omit it.
 
 - **Pagination** (cursor):
-  List endpoints for checkouts and buyer profiles return `{ data, nextCursor }`, newest
-  first. Pass `nextCursor` back as `?cursor=`; `null` means the end. `limit` defaults to 20
+  Checkouts, buyer profiles, API keys and webhook endpoints all return `{ data, nextCursor }`,
+  newest first. Pass `nextCursor` back as `?cursor=`; `null` means the end. `limit` defaults to 20
   and caps at 100.
+
+  Checkouts and buyer profiles are genuinely paged. `GET /v1/api-keys` and `GET /v1/webhooks` are
+  not — they answer the whole collection, with `nextCursor: null` and their original `keys` /
+  `endpoints` arrays alongside `data` for callers written before the shapes converged. Read `data`.
+
+  `GET /v1/buyer-sessions` is the exception that has not converged: it answers
+  `{ sessions, vaultEnabled }`, with no `data` and no cursor.
 
 - **Errors** ({ error: true, message }):
   Plus `issues` on validation failures, `requiredScope` on a scope refusal, `sandboxMerchants`
@@ -4304,13 +4519,20 @@ surfaces do not:
 
 - **End-user isolation** (subject):
   A key may be bound to one of your end users at creation, after which it sees and creates only
-  that person's rows. `subject` is your own opaque id, accepted on `POST /v1/api-keys`,
-  `POST /v1/checkouts` and `POST /v1/buyer-profiles`. A key without one is tenant-wide. See
-  [End-user isolation](/end-user-isolation).
+  that person's rows. `subject` is your own opaque id — 1 to 200 characters, `""` is a `400` —
+  accepted on `POST /v1/api-keys`, `POST /v1/checkouts` and `POST /v1/buyer-profiles`, filterable on
+  `GET /v1/checkouts?subject=`, and present on the `checkout.status_changed` webhook payload. A key
+  without one is tenant-wide. See [End-user isolation](/end-user-isolation).
+
+- **Strict create bodies** (unknown fields are a 400):
+  The three create bodies that accept `subject` reject unrecognised top-level fields, so a
+  misspelled `subjectt` fails loudly instead of returning `201` with an untagged row. `target`,
+  `constraints` and `metadata` stay permissive inside.
 
 - **Idempotency** (Idempotency-Key header):
   `POST /v1/checkouts` only. A replay returns the original checkout with `200`; the same key with
-  a different body is `409`. Keys are namespaced per `(tenant, subject)` and never expire. See
+  a different body is `409`. Keys are namespaced per `(tenant, subject)` and expire 24 hours after
+  the checkout that claimed them was created. See
   [Idempotency](/errors-and-limits#idempotency).
 
 ## Machine-readable spec
@@ -4533,10 +4755,27 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
   is indistinguishable from one that never landed, and the retry buys the item twice. Empty or
   whitespace-only is treated as absent.
 
+  A key lives **24 hours** from the creation of the checkout that claimed it. After that it is
+  released and the same string starts a new purchase.
+
   See [Idempotent creates](#idempotent-creates) below and
   [Idempotency](/errors-and-limits#idempotency).
 
 ### Body
+
+The top level is **strict**: an unknown field is a `400`, not a field we drop for you. A misspelled
+`subjectt` would otherwise have returned `201` with an untagged checkout the whole account can read.
+`target`, `constraints` and `metadata` stay permissive inside — they are extension points.
+
+```json 400 — a misspelled field
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    { "code": "unrecognized_keys", "keys": ["subjectt"], "path": [], "message": "Unrecognized key(s) in object: 'subjectt'" }
+  ]
+}
+```
 
 - **target** (object):
 
@@ -4569,19 +4808,28 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
       Inferred from the URL's ccTLD when omitted.
 
 - **buyerProfileId** (string):
-  UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to
-  your tenant — and, on a [subject-bound key](/end-user-isolation), to the same end user — or
-  you get `400 buyerProfileId not found`.
+  UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to your
+  tenant, or you get `400 buyerProfileId not found`.
+
+  It is checked against **this checkout's** `subject`, not the key's. A
+  [subject-bound key](/end-user-isolation) reaching for another end user's profile gets that same
+  `400` — from where it stands the profile does not exist. A tenant-wide key naming one end user's
+  profile alongside another's `subject` gets a `403` that names both. An untagged profile on a
+  tagged checkout is allowed, and so is the reverse.
 
   Without one the agent has no address or email, and most checkouts cannot be completed.
 
 - **subject** (string):
-  Your own id for the end user this purchase is for. Max 200 characters, opaque to us, never sent
-  to the merchant. Comes back on the checkout when set, and omitted when not.
+  Your own id for the end user this purchase is for. 1 to 200 characters after trimming, opaque to
+  us, never sent to the merchant. Comes back on the checkout when set, and omitted when not.
+
+  Empty or whitespace-only is a `400` — a subject that means nothing is worse than none, because it
+  reads as isolation you do not have.
 
   On a [subject-bound key](/end-user-isolation) this is filled in for you: omit it and the
   checkout is stamped with the key's subject; name a different one and the request is a `403`.
-  On a tenant-wide key it is how a row gets tagged in the first place.
+  On a tenant-wide key it is how a row gets tagged in the first place, and how you can later filter
+  the list with `?subject=`.
 
   It also namespaces the `Idempotency-Key` — two end users may use the same key string without
   colliding.
@@ -4631,13 +4879,14 @@ With an `Idempotency-Key` header, this endpoint has a second success code:
 
 | Response | When |
 | --- | --- |
-| `201` | First use of the key. A new checkout, a new run. |
-| `200` | The key has been used before with the same body. The **original** checkout, in whatever state it is in now — poll it, do not assume `queued`. |
-| `409` | The key has been used before with a **different** body. Nothing is created. |
+| `201` | First use of the key — or its first use since the 24-hour window lapsed. A new checkout, a new run. |
+| `200` | The key has been used in the last 24 hours with the same body. The **original** checkout, in whatever state it is in now — poll it, do not assume `queued`. |
+| `409` | The key has been used in the last 24 hours with a **different** body. Nothing is created. |
 
 The body is hashed with its keys sorted and its defaults applied, so key order does not matter
 and `"constraints": {}` matches an omitted `constraints`. Keys live in a `(tenant, subject)`
-namespace and never expire.
+namespace and expire 24 hours after the checkout that claimed them was created — released by an
+hourly sweep, so the boundary is approximate to within an hour.
 
 ```json 409
 {
@@ -4651,20 +4900,22 @@ Two concurrent retries of the same request do not race into two purchases: the d
 winner and the loser returns the winner's checkout with `200`.
 
 A replay is checked before the quota, so it does not consume one of your active-checkout slots,
-and does not launch a second browser. It is checked *after* URL and sandbox validation, so a
-replay of a request whose target has since become unreachable can still return `400`.
+and does not launch a second browser. It is checked *after* URL, sandbox, `subject` and
+buyer-profile validation, so a replay whose target has since become unreachable — or whose buyer
+profile has since been deleted — can still return `400` rather than the checkout you expected.
 
 NOTE:
 This is idempotency of the **call**, not of the run. Once a checkout is `failed`, its key returns
-that failure for as long as the row exists. Retrying for real means a new checkout and a new key.
+that failure until the key expires. Retrying for real means a new checkout and a new key.
 
 ### Errors
 
 | Status | Message |
 | --- | --- |
-| `400` | `Invalid request` (with `issues`), `buyerProfileId not found` |
+| `400` | `Invalid request` (with `issues`) — including an unknown top-level field and an empty `subject` — or `buyerProfileId not found` |
 | `403` | Sandbox confinement — the account is sandbox-only, or the request used a `ck_test_` key. Body carries `sandboxMerchants`. See [Sandbox](/sandbox). |
 | `403` | `This API key is bound to subject '<s>' and cannot act for another.` — a [bound key](/end-user-isolation) named a different `subject`. |
+| `403` | `buyerProfileId belongs to subject '<a>', but this checkout is for '<b>'.` — a tenant-wide key mixed two end users. |
 | `409` | `This Idempotency-Key was already used with a different request body.` Carries `checkoutId`. |
 | `429` | `Active checkout limit reached (5). …`, `Daily checkout limit reached (200 per 24h).` |
 
@@ -4803,6 +5054,10 @@ Success: `200`.
 ```bash
 curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&limit=20" \
   -H "authorization: Bearer $CKV_KEY"
+
+# One end user's runs, from a tenant-wide key.
+curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $CKV_KEY"
 ```
 
 ### Query
@@ -4815,6 +5070,14 @@ curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&li
 - **status** (string):
   Filter to one status. An unrecognised value returns `400 Unknown status 'x'`.
 
+- **subject** (string):
+  Filter to one [end user](/end-user-isolation). Composes with `status`, `limit` and `cursor`; a
+  subject with no checkouts is an empty page, not an error.
+
+  On a [subject-bound key](/end-user-isolation) the page is already narrowed to its own end user, so
+  the parameter is redundant. Passing its own subject is fine; naming a different one is a `403` —
+  refused rather than quietly ignored.
+
 ### Response
 
 Deliberately a **summary**, not the full object. The full shape carries the entire event
@@ -4826,6 +5089,7 @@ timeline, which is exactly what a list view must not fetch.
     {
       "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
       "status": "awaiting_user_action",
+      "subject": "user_a91f",
       "url": "https://example-store.com/products/widget",
       "request": "buy this in medium, cheapest delivery",
       "pendingUserActionId": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
@@ -4835,6 +5099,7 @@ timeline, which is exactly what a list view must not fetch.
     {
       "id": "0c9d8e7f-6a5b-4c3d-9e2f-112233445566",
       "status": "succeeded",
+      "subject": "user_a91f",
       "url": "https://example-store.com/products/gadget",
       "request": "buy one",
       "receipt": { "total": { "amount": "18.00", "currency": "USD" }, "merchantOrderId": "1041" },
@@ -4855,6 +5120,10 @@ timeline, which is exactly what a list view must not fetch.
 }
 ```
 
+- **subject** (string):
+  **Omitted** when the checkout is not tagged to an end user — the same convention as the full
+  object. The third row above is an untagged checkout.
+
 - **url** (string | null):Lifted from `target.url`.
 - **request** (string | null):Lifted from `target.request`.
 - **failure** (object):Omitted unless failed.
@@ -4868,10 +5137,9 @@ timeline, which is exactly what a list view must not fetch.
   Pass back as `?cursor=`. `null` on the last page.
 
 NOTE:
-The summary carries **no `subject`**, and there is no `?subject=` filter. A
-[subject-bound key](/end-user-isolation) sees only its own end user's checkouts here, so it does
-not need one; a tenant-wide key sees everybody's and cannot tell them apart without fetching each
-checkout. Keep your own map from checkout id to user at creation time.
+A [subject-bound key](/end-user-isolation) sees only its own end user's checkouts here — other
+people's runs are absent from the page rather than redacted out of it. A tenant-wide key sees
+everybody's, tells them apart by the `subject` on each row, and narrows to one with `?subject=`.
 
 ---
 
@@ -5119,14 +5387,17 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 ### Body
 
 Every field is optional — `{}` is a valid profile — but the agent can only fill what you gave
-it.
+it. The top level is **strict**, exactly like `PATCH`: an unknown field is a `400` with an
+`unrecognized_keys` issue rather than a field we quietly drop, because the field most worth
+misspelling here is `subject`, and a `201` carrying an untagged profile is a fence that is not
+there. The nested `name`, `contact` and `shipping` objects are not strict.
 
 - **label** (string):
   Yours, for bookkeeping. Never sent to a merchant.
 
 - **subject** (string):
-  Your own id for the end user this profile belongs to. Max 200 characters, opaque to us, never
-  sent to a merchant.
+  Your own id for the end user this profile belongs to. 1 to 200 characters after trimming, opaque
+  to us, never sent to a merchant. `""` is a `400`.
 
   On a [subject-bound key](/end-user-isolation) it is filled in for you — omit it and the profile
   is stamped with the key's subject; name a different one and the request is a `403`. On a
@@ -5197,7 +5468,8 @@ typed exactly as sent.
 Omitted sub-objects come back as `null`, not as `{}`. `subject` is always present and `null` on
 an untagged profile — unlike a checkout, which omits the field entirely.
 
-`400 Invalid profile` with `issues` on a type mismatch.
+`400 Invalid profile` with `issues` on a type mismatch, an unknown top-level field, or an empty
+`subject`.
 
 ---
 
@@ -5258,7 +5530,8 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
 Newest first. `nextCursor: null` means the last page.
 
 On a [subject-bound key](/end-user-isolation) this page contains only that end user's profiles.
-There is no `?subject=` filter for a tenant-wide key — read `subject` off each row.
+There is no `?subject=` filter here — unlike the checkout list, which has one — so a tenant-wide key
+reads `subject` off each row.
 
 ---
 
@@ -5306,7 +5579,8 @@ throws the address away and stores one that is only a postcode. Send the whole o
   Replaces the whole `shipping` document. `null` clears it — this is how you remove an address you
   no longer want us holding, short of deleting the profile.
 
-`subject` is **not** accepted here. Unlike create, this schema is strict.
+`subject` is **not** accepted here. Both schemas are strict, so this is a `400` rather than a
+silently dropped field.
 
 ### Errors
 
@@ -5316,8 +5590,8 @@ throws the address away and stores one that is only a postcode. Send the whole o
 | `400` | `Invalid profile` (with `issues`) — type mismatch, or any key outside the four |
 | `404` | `Profile not found` |
 
-The schema is strict, so an unexpected key is a `400` rather than a silently dropped field. That
-is most likely to bite you with `subject`:
+An unexpected key is a `400` rather than a silently dropped field. That is most likely to bite you
+with `subject`:
 
 ```json 400
 {
@@ -5536,7 +5810,7 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
 
 ```json
 {
-  "endpoints": [
+  "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
       "url": "https://hooks.example.com/checkoutvia",
@@ -5545,11 +5819,18 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
       "lastDeliveryStatus": 200,
       "createdAt": "2026-07-28T14:03:55.204Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
-Not paginated, newest first. Revoked endpoints are excluded.
+**Read `data`**, for the same reason as on
+[`GET /v1/api-keys`](/api-reference/api-keys#list-keys): it is the field checkouts and buyer profiles
+already answer with. The response repeats the identical array as `endpoints`, the field's original
+name, elided from the example for length and kept for existing callers.
+
+`nextCursor` is always `null` — there is nothing to page. Newest first, and revoked endpoints are
+excluded.
 
 - **lastDeliveryAt** (string | null):
   When we last attempted a delivery. `null` until the first one.
@@ -5645,9 +5926,9 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   poll, cancel and answer checkouts. Scopes are fixed at creation — there is no re-scoping.
 
 - **subject** (string):
-  Bind the key to one of your end users. Max 200 characters, your own opaque id — we never
-  generate one. **Omit for a tenant-wide key**, which is what every key issued before this
-  existed already is.
+  Bind the key to one of your end users. 1 to 200 characters after trimming, your own opaque id —
+  we never generate one. **Omit for a tenant-wide key**, which is what every key issued before this
+  existed already is. `""` is a `400`, not a tenant-wide key by another name.
 
   A bound key sees and creates only that subject's checkouts and buyer profiles, and is refused
   outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`,
@@ -5658,7 +5939,9 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   contract in [End-user isolation](/end-user-isolation).
 
 An empty body is valid and produces a full-access `test` key — tenant-wide, unless the key you
-called with is itself bound.
+called with is itself bound. The body is otherwise **strict**: an unknown field is a `400` with an
+`unrecognized_keys` issue, so a misspelled `subjectt` cannot hand you a tenant-wide key you believed
+was bound.
 
 ```json Response (201) — the bound variant
 {
@@ -5686,7 +5969,7 @@ process or database query can recover it.
 
 | Status | Message | Extra field |
 | --- | --- | --- |
-| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, or `scopes` was empty / over 32 entries | `issues` |
+| `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, `scopes` was empty / over 32 entries, `subject` was empty or over 200 characters, or the body carried an unknown field | `issues` |
 | `400` | `Unknown scope(s): …` — a string that is not in the valid set | `validScopes` |
 | `403` | `This account is sandbox-only. Live keys require activation.` | — |
 | `403` | `A test key cannot issue a live key. Use a live key, or activate the account.` | — |
@@ -5731,7 +6014,7 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
 
 ```json
 {
-  "keys": [
+  "data": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
       "label": "agent for user_a91f",
@@ -5754,12 +6037,23 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
       "revokedAt": "2026-07-27T11:44:09.331Z",
       "createdAt": "2026-07-20T08:15:02.640Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
-Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set — filter
-client-side if you only want active ones.
+**Read `data`.** It is the field checkouts, buyer profiles and webhook endpoints already answer with,
+and this route now matches them.
+
+The response also repeats that identical array as `keys` — the field's original name, elided from
+the example above for length. It is kept because existing callers and the published MCP client read
+it, and it is not going away; `data` is simply the one to write new code against.
+
+`nextCursor` is always `null` here — the collection is small and tenant-bounded, so there is nothing
+to page. It exists so a generic list helper does not need a special case.
+
+Newest first. **Revoked keys are included**, with `revokedAt` set — filter client-side if you only
+want active ones.
 
 Listing never returns a secret. `keyPrefix` is the most a list can show. It does return
 `scopes`, which is how you audit what each outstanding key can reach; `["*"]` is a full-access
@@ -5864,8 +6158,12 @@ The default window is the current calendar month, which is the unit tenants are 
   **This is the billable number.** One per checkout that reached `succeeded`.
 
 - **byDay** (array):
-  `{ day, count }` with `day` as `YYYY-MM-DD` in UTC. Days with no completions are **omitted**,
-  not zero-filled — fill gaps yourself if you are drawing a chart.
+  `{ day, count }` with `day` as `YYYY-MM-DD`. Days with no completions are **omitted**, not
+  zero-filled — fill gaps yourself if you are drawing a chart.
+
+  **The buckets are UTC days**, cut at UTC midnight, matching `from`, `to` and every other timestamp
+  the API returns. They do not follow your timezone or ours: a checkout that completed at 02:00 UTC
+  belongs to that UTC day everywhere, so the same window always returns the same buckets.
 
 - **merchandiseVolume** (array):
   `{ currency, amount }` — the sum of receipt totals, grouped by currency. Reporting only; we

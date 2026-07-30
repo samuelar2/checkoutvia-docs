@@ -55,8 +55,12 @@ The default window is the current calendar month, which is the unit tenants are 
 </ResponseField>
 
 <ResponseField name="byDay" type="array">
-  `{ day, count }` with `day` as `YYYY-MM-DD` in UTC. Days with no completions are **omitted**,
-  not zero-filled — fill gaps yourself if you are drawing a chart.
+  `{ day, count }` with `day` as `YYYY-MM-DD`. Days with no completions are **omitted**, not
+  zero-filled — fill gaps yourself if you are drawing a chart.
+
+  **The buckets are UTC days**, cut at UTC midnight, matching `from`, `to` and every other timestamp
+  the API returns. They do not follow your timezone or ours: a checkout that completed at 02:00 UTC
+  belongs to that UTC day everywhere, so the same window always returns the same buckets.
 </ResponseField>
 
 <ResponseField name="merchandiseVolume" type="array">

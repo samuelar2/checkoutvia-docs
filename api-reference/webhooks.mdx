@@ -66,7 +66,7 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
 
 ```json
 {
-  "endpoints": [
+  "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
       "url": "https://hooks.example.com/checkoutvia",
@@ -75,11 +75,18 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
       "lastDeliveryStatus": 200,
       "createdAt": "2026-07-28T14:03:55.204Z"
     }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
-Not paginated, newest first. Revoked endpoints are excluded.
+**Read `data`**, for the same reason as on
+[`GET /v1/api-keys`](/api-reference/api-keys#list-keys): it is the field checkouts and buyer profiles
+already answer with. The response repeats the identical array as `endpoints`, the field's original
+name, elided from the example for length and kept for existing callers.
+
+`nextCursor` is always `null` — there is nothing to page. Newest first, and revoked endpoints are
+excluded.
 
 <ResponseField name="lastDeliveryAt" type="string | null">
   When we last attempted a delivery. `null` until the first one.

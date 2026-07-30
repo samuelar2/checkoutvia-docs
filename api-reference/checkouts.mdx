@@ -42,11 +42,28 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
   is indistinguishable from one that never landed, and the retry buys the item twice. Empty or
   whitespace-only is treated as absent.
 
+  A key lives **24 hours** from the creation of the checkout that claimed it. After that it is
+  released and the same string starts a new purchase.
+
   See [Idempotent creates](#idempotent-creates) below and
   [Idempotency](/errors-and-limits#idempotency).
 </ParamField>
 
 ### Body
+
+The top level is **strict**: an unknown field is a `400`, not a field we drop for you. A misspelled
+`subjectt` would otherwise have returned `201` with an untagged checkout the whole account can read.
+`target`, `constraints` and `metadata` stay permissive inside — they are extension points.
+
+```json 400 — a misspelled field
+{
+  "error": true,
+  "message": "Invalid request",
+  "issues": [
+    { "code": "unrecognized_keys", "keys": ["subjectt"], "path": [], "message": "Unrecognized key(s) in object: 'subjectt'" }
+  ]
+}
+```
 
 <ParamField body="target" type="object" required>
   <Expandable title="target">
@@ -85,20 +102,29 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 </ParamField>
 
 <ParamField body="buyerProfileId" type="string">
-  UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to
-  your tenant — and, on a [subject-bound key](/end-user-isolation), to the same end user — or
-  you get `400 buyerProfileId not found`.
+  UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to your
+  tenant, or you get `400 buyerProfileId not found`.
+
+  It is checked against **this checkout's** `subject`, not the key's. A
+  [subject-bound key](/end-user-isolation) reaching for another end user's profile gets that same
+  `400` — from where it stands the profile does not exist. A tenant-wide key naming one end user's
+  profile alongside another's `subject` gets a `403` that names both. An untagged profile on a
+  tagged checkout is allowed, and so is the reverse.
 
   Without one the agent has no address or email, and most checkouts cannot be completed.
 </ParamField>
 
 <ParamField body="subject" type="string">
-  Your own id for the end user this purchase is for. Max 200 characters, opaque to us, never sent
-  to the merchant. Comes back on the checkout when set, and omitted when not.
+  Your own id for the end user this purchase is for. 1 to 200 characters after trimming, opaque to
+  us, never sent to the merchant. Comes back on the checkout when set, and omitted when not.
+
+  Empty or whitespace-only is a `400` — a subject that means nothing is worse than none, because it
+  reads as isolation you do not have.
 
   On a [subject-bound key](/end-user-isolation) this is filled in for you: omit it and the
   checkout is stamped with the key's subject; name a different one and the request is a `403`.
-  On a tenant-wide key it is how a row gets tagged in the first place.
+  On a tenant-wide key it is how a row gets tagged in the first place, and how you can later filter
+  the list with `?subject=`.
 
   It also namespaces the `Idempotency-Key` — two end users may use the same key string without
   colliding.
@@ -151,13 +177,14 @@ With an `Idempotency-Key` header, this endpoint has a second success code:
 
 | Response | When |
 | --- | --- |
-| `201` | First use of the key. A new checkout, a new run. |
-| `200` | The key has been used before with the same body. The **original** checkout, in whatever state it is in now — poll it, do not assume `queued`. |
-| `409` | The key has been used before with a **different** body. Nothing is created. |
+| `201` | First use of the key — or its first use since the 24-hour window lapsed. A new checkout, a new run. |
+| `200` | The key has been used in the last 24 hours with the same body. The **original** checkout, in whatever state it is in now — poll it, do not assume `queued`. |
+| `409` | The key has been used in the last 24 hours with a **different** body. Nothing is created. |
 
 The body is hashed with its keys sorted and its defaults applied, so key order does not matter
 and `"constraints": {}` matches an omitted `constraints`. Keys live in a `(tenant, subject)`
-namespace and never expire.
+namespace and expire 24 hours after the checkout that claimed them was created — released by an
+hourly sweep, so the boundary is approximate to within an hour.
 
 ```json 409
 {
@@ -171,21 +198,23 @@ Two concurrent retries of the same request do not race into two purchases: the d
 winner and the loser returns the winner's checkout with `200`.
 
 A replay is checked before the quota, so it does not consume one of your active-checkout slots,
-and does not launch a second browser. It is checked *after* URL and sandbox validation, so a
-replay of a request whose target has since become unreachable can still return `400`.
+and does not launch a second browser. It is checked *after* URL, sandbox, `subject` and
+buyer-profile validation, so a replay whose target has since become unreachable — or whose buyer
+profile has since been deleted — can still return `400` rather than the checkout you expected.
 
 <Note>
 This is idempotency of the **call**, not of the run. Once a checkout is `failed`, its key returns
-that failure for as long as the row exists. Retrying for real means a new checkout and a new key.
+that failure until the key expires. Retrying for real means a new checkout and a new key.
 </Note>
 
 ### Errors
 
 | Status | Message |
 | --- | --- |
-| `400` | `Invalid request` (with `issues`), `buyerProfileId not found` |
+| `400` | `Invalid request` (with `issues`) — including an unknown top-level field and an empty `subject` — or `buyerProfileId not found` |
 | `403` | Sandbox confinement — the account is sandbox-only, or the request used a `ck_test_` key. Body carries `sandboxMerchants`. See [Sandbox](/sandbox). |
 | `403` | `This API key is bound to subject '<s>' and cannot act for another.` — a [bound key](/end-user-isolation) named a different `subject`. |
+| `403` | `buyerProfileId belongs to subject '<a>', but this checkout is for '<b>'.` — a tenant-wide key mixed two end users. |
 | `409` | `This Idempotency-Key was already used with a different request body.` Carries `checkoutId`. |
 | `429` | `Active checkout limit reached (5). …`, `Daily checkout limit reached (200 per 24h).` |
 
@@ -335,6 +364,10 @@ Success: `200`.
 ```bash
 curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&limit=20" \
   -H "authorization: Bearer $CKV_KEY"
+
+# One end user's runs, from a tenant-wide key.
+curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $CKV_KEY"
 ```
 
 ### Query
@@ -349,6 +382,14 @@ curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&li
 <ParamField query="status" type="string">
   Filter to one status. An unrecognised value returns `400 Unknown status 'x'`.
 </ParamField>
+<ParamField query="subject" type="string">
+  Filter to one [end user](/end-user-isolation). Composes with `status`, `limit` and `cursor`; a
+  subject with no checkouts is an empty page, not an error.
+
+  On a [subject-bound key](/end-user-isolation) the page is already narrowed to its own end user, so
+  the parameter is redundant. Passing its own subject is fine; naming a different one is a `403` —
+  refused rather than quietly ignored.
+</ParamField>
 
 ### Response
 
@@ -361,6 +402,7 @@ timeline, which is exactly what a list view must not fetch.
     {
       "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
       "status": "awaiting_user_action",
+      "subject": "user_a91f",
       "url": "https://example-store.com/products/widget",
       "request": "buy this in medium, cheapest delivery",
       "pendingUserActionId": "7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60",
@@ -370,6 +412,7 @@ timeline, which is exactly what a list view must not fetch.
     {
       "id": "0c9d8e7f-6a5b-4c3d-9e2f-112233445566",
       "status": "succeeded",
+      "subject": "user_a91f",
       "url": "https://example-store.com/products/gadget",
       "request": "buy one",
       "receipt": { "total": { "amount": "18.00", "currency": "USD" }, "merchantOrderId": "1041" },
@@ -390,6 +433,10 @@ timeline, which is exactly what a list view must not fetch.
 }
 ```
 
+<ResponseField name="subject" type="string">
+  **Omitted** when the checkout is not tagged to an end user — the same convention as the full
+  object. The third row above is an untagged checkout.
+</ResponseField>
 <ResponseField name="url" type="string | null">Lifted from `target.url`.</ResponseField>
 <ResponseField name="request" type="string | null">Lifted from `target.request`.</ResponseField>
 <ResponseField name="failure" type="object">Omitted unless failed.</ResponseField>
@@ -406,10 +453,9 @@ timeline, which is exactly what a list view must not fetch.
 </ResponseField>
 
 <Note>
-The summary carries **no `subject`**, and there is no `?subject=` filter. A
-[subject-bound key](/end-user-isolation) sees only its own end user's checkouts here, so it does
-not need one; a tenant-wide key sees everybody's and cannot tell them apart without fetching each
-checkout. Keep your own map from checkout id to user at creation time.
+A [subject-bound key](/end-user-isolation) sees only its own end user's checkouts here — other
+people's runs are absent from the page rather than redacted out of it. A tenant-wide key sees
+everybody's, tells them apart by the `subject` on each row, and narrows to one with `?subject=`.
 </Note>
 
 ---
