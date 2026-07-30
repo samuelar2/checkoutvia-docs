@@ -292,8 +292,10 @@ curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
   -H "authorization: Bearer $CKV_ADMIN_KEY"
 ```
 
-The filter composes with `status`, `limit` and `cursor`. Rows carry `subject` when the checkout has
-one, so you can also read it off an unfiltered page.
+The filter composes with `status`, `limit` and `cursor`, and takes the same shape as every other
+subject — 1 to 200 characters, or a `400`. A well-formed subject that no checkout carries is an
+empty page, not an error. Rows carry `subject` when the checkout has one, so you can also read it
+off an unfiltered page.
 
 A bound key does not need the parameter — its page is already narrowed to one person — and asking
 for somebody else's is refused rather than ignored:
