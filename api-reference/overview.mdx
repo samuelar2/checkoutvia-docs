@@ -55,6 +55,19 @@ surfaces do not:
   [Authentication](/authentication#scopes).
 </ResponseField>
 
+<ResponseField name="End-user isolation" type="subject">
+  A key may be bound to one of your end users at creation, after which it sees and creates only
+  that person's rows. `subject` is your own opaque id, accepted on `POST /v1/api-keys`,
+  `POST /v1/checkouts` and `POST /v1/buyer-profiles`. A key without one is tenant-wide. See
+  [End-user isolation](/end-user-isolation).
+</ResponseField>
+
+<ResponseField name="Idempotency" type="Idempotency-Key header">
+  `POST /v1/checkouts` only. A replay returns the original checkout with `200`; the same key with
+  a different body is `409`. Keys are namespaced per `(tenant, subject)` and never expire. See
+  [Idempotency](/errors-and-limits#idempotency).
+</ResponseField>
+
 ## Machine-readable spec
 
 The whole `/v1` surface is described in OpenAPI 3.1. The spec lives at `openapi.json` in the

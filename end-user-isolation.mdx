@@ -1,0 +1,333 @@
+---
+title: "End-user isolation"
+description: "Bind an API key to one of your end users with `subject`, so the worst a confused or manipulated agent can reach is one person's data."
+---
+
+A `subject` is **your** id for one of your end users. You already have one — a row id, a UUID,
+a user id from your auth provider — so we never generate a second. Rows carry it, keys can be
+bound to it, and a bound key can only see and create rows for that one person.
+
+```bash
+# A key that acts for exactly one of your users, and can never act for another.
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.write"],"subject":"user_a91f"}'
+```
+
+<Note>
+**The rule, in one line.** A key with a `subject` sees only that subject's rows. A key without
+one sees the whole tenant, exactly as it always has.
+</Note>
+
+## Why this exists
+
+[Scopes](/authentication#scopes) narrow *what* a key may do. `subject` narrows *whose data* it
+may do it to. You need the second axis for the same reason you need the first, only more so.
+
+The holder of a Checkoutvia key is frequently an autonomous agent, and that agent spends its
+run reading merchant pages — untrusted text, written by someone else, quoted back to the model
+in option names, form labels and progress messages. "List the buyer profiles" is a completely
+plausible call for a confused or prompt-injected agent to make. It is also a call that, on a
+tenant-wide key, returns every name, email and shipping address you have ever stored.
+
+The blast radius of that call should be one person. That is the whole feature.
+
+Concretely, on a tenant serving thousands of end users through one agent, a leaked or
+manipulated tenant-wide key exposes all of them at once. A bound key exposes the one buyer it
+was minted for, and cannot mint itself anything wider.
+
+### Nothing changes until you opt in
+
+Every key issued before this existed carries no subject, which means tenant-wide, which is
+exactly what those keys have always been. There is no migration, no behaviour change, and no
+new failure mode on an integration that ignores this page. Isolation is something you turn on
+per key, at creation.
+
+## Bind a key to an end user
+
+`subject` on `POST /v1/api-keys` is the only place a binding is created. It is fixed for the
+life of the key, like `mode` and `scopes`. The call at the top of this page answers with:
+
+```json Response (201)
+{
+  "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
+  "mode": "live",
+  "scopes": ["checkouts.write", "buyer-profiles.write"],
+  "subject": "user_a91f",
+  "keyPrefix": "ck_live_9Hf2QzT",
+  "key": "ck_live_9Hf2QzT0mHq9pP2rVwXk1tLb"
+}
+```
+
+`subject` is present on the creation response only when the key is bound. On
+`GET /v1/api-keys` it is always present and `null` for a tenant-wide key — which is how you
+audit, from your admin key, which of your outstanding keys act for whom.
+
+<ParamField body="subject" type="string">
+  Max 200 characters. Opaque to us: never parsed, never validated against anything, never sent
+  to a merchant, and never typed into a checkout form. There is no registry of subjects and no
+  endpoint that lists them — a subject exists because a row or a key mentions it.
+
+  Prefer your own internal id over an email address or a name. It is stored with us and echoed
+  back on reads, and an opaque id is the version of that data you would rather have in both
+  places.
+</ParamField>
+
+<Warning>
+Do not send `"subject": ""`. An empty string is accepted, and then behaves like no subject at
+all: a key created with it acts tenant-wide, and a row created with it is invisible to every
+bound key while remaining visible to tenant-wide ones. `subject: user.id ?? ""` is the shape of
+this bug. Send a real id or omit the field.
+</Warning>
+
+## What a bound key can reach
+
+Every lookup a bound key makes is filtered on `(tenant, subject)`, and the endpoints that answer
+account-level questions refuse it outright.
+
+| Call | On a bound key |
+| --- | --- |
+| `POST /v1/checkouts` | Allowed. The checkout is stamped with the key's subject. |
+| `GET /v1/checkouts` | Only that subject's checkouts. Another end user's runs are not in the page — not redacted, absent. |
+| `GET`/`DELETE /v1/checkouts/{id}` | `404 Checkout not found` for another subject's checkout. |
+| `POST /v1/checkouts/{id}/actions/{actionId}` | `404 Checkout not found` — you cannot answer a question raised on someone else's run. |
+| `POST /v1/checkouts/{id}/embed-token` | `404 Checkout not found` — you cannot watch someone else's browser. |
+| `POST /v1/buyer-profiles` | Allowed. Stamped with the key's subject. |
+| `GET /v1/buyer-profiles` | Only that subject's profiles. |
+| `GET`/`PATCH`/`DELETE /v1/buyer-profiles/{id}` | `404 Profile not found` for another subject's profile. |
+| `GET /v1/buyer-sessions` | Only sessions belonging to that subject's profiles. |
+| `DELETE /v1/buyer-sessions/{id}` | `404 Session not found` for another subject's session. |
+| `POST /v1/api-keys` | Allowed, and the new key inherits the binding. |
+| `GET /v1/api-keys` | **`403`** — the key list is a tenant-wide fact. |
+| `DELETE /v1/api-keys/{id}` | **`403`** — revocation is a tenant-wide power. |
+| `GET /v1/usage` | **`403`** — billing is between us and you. |
+| `POST`/`GET`/`DELETE /v1/webhooks` | **`403`** — endpoints receive every end user's transitions. |
+
+The four `403`s are all the same judgement: those calls answer questions about the *account*,
+not about a buyer. An end user's key enumerating its siblings, revoking the account's own key,
+reading the account's total spend, or subscribing to everyone's checkout activity would each be
+a leak between your own customers.
+
+```json 403 — a bound key reading account usage
+{ "error": true, "message": "A subject-bound key cannot read account usage." }
+```
+
+### Authority passes down, never sideways
+
+A bound key can mint keys, which is useful — a per-session credential for a single buyer,
+narrower in scope than the one that issued it. What it cannot do is widen:
+
+- Omitting `subject` **inherits the binding**. It does not mean tenant-wide. There is no body
+  that mints a tenant-wide key from a bound one.
+- Naming a different `subject` is a `403`.
+
+```json 403
+{ "error": true, "message": "This API key is bound to subject 'user_a91f' and cannot issue keys for another." }
+```
+
+This is the same rule that already governs [scopes](/authentication#scopes) and
+`mode`: a key can only ever hand out authority it already holds. Without it, one `POST` turns a
+single buyer's credential into the account's.
+
+### Borrowing another buyer's stored address
+
+`buyerProfileId` on `POST /v1/checkouts` is resolved through the same fence, so a bound key
+cannot attach an end user it does not own:
+
+```json 400
+{ "error": true, "message": "buyerProfileId not found" }
+```
+
+It is a `400` rather than a `403` because from that key's position the profile genuinely does
+not exist — the ownership check and the existence check are the same query. Worth stopping on:
+without it, one agent could ship a parcel to another customer's home address, which hands their
+address to a merchant and their order to a stranger.
+
+## Tagging rows from a tenant-wide key
+
+`subject` is also accepted on the create bodies, which is how rows get tagged in the first place
+if you would rather keep one admin key than mint one per user:
+
+<CodeGroup>
+```bash Checkout
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "target": { "url": "https://your-sandbox-store.myshopify.com/products/widget", "request": "buy this in medium" },
+    "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+    "subject": "user_a91f"
+  }'
+```
+
+```bash Buyer profile
+curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+    "label": "home",
+    "subject": "user_a91f",
+    "contact": { "email": "ada@example.com" }
+  }'
+```
+</CodeGroup>
+
+A serialized checkout carries `subject` when it is set, and omits the field entirely when it is
+not. A buyer profile always carries it, `null` when the profile is not tagged.
+
+On a bound key the field is redundant but permitted: sending the key's own subject is fine,
+sending any other value is a `403`.
+
+```json 403
+{ "error": true, "message": "This API key is bound to subject 'user_a91f' and cannot act for another." }
+```
+
+<Tip>
+Tagging from an admin key gets you the audit trail — you can answer "what has this user bought"
+— without getting you the containment. The agent still holds a key that can read everyone. If
+the point is to survive a prompt injection, the agent needs a bound key.
+</Tip>
+
+## A profile cannot be reassigned
+
+`PATCH /v1/buyer-profiles/{id}` does not accept `subject`, and does not ignore it either:
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid profile",
+  "issues": [
+    {
+      "code": "unrecognized_keys",
+      "keys": ["subject"],
+      "path": [],
+      "message": "Unrecognized key(s) in object: 'subject'"
+    }
+  ]
+}
+```
+
+The schema is strict on purpose. A caller trying to move a stored identity from one person to
+another should be told it did not happen, rather than getting a `200` and a profile that is
+still where it was. There is no move endpoint: create a profile under the right subject and
+delete the wrong one.
+
+## What isolation does not cover
+
+Honest boundaries. These are tenant-level facts, and a `subject` does not partition them.
+
+<AccordionGroup>
+  <Accordion title="Quotas are per tenant, not per end user">
+    The default 5 concurrent checkouts and 200 per rolling 24 hours are counted across the whole
+    account. One end user's five parked runs will `429` everybody else's next create. If you are
+    fanning a real user base through this, the concurrency cap is the number to talk to us about
+    before the subject model is. See [Quotas](/errors-and-limits#quotas).
+  </Accordion>
+
+  <Accordion title="Webhooks are tenant-wide and carry no subject">
+    One endpoint receives the status transitions of every checkout on the account, for every end
+    user, and the payload is `{ type, checkoutId, status, failureReason, createdAt }` — there is
+    no `subject` on it. To route a delivery to the right user, resolve
+    `GET /v1/checkouts/{checkoutId}` with a tenant-wide key and read `subject` off the checkout,
+    or keep your own map from checkout id to user at creation time. Keeping the map is cheaper
+    and does not need a second call.
+
+    The same applies to `GET /v1/checkouts`: the list summary carries no `subject` and there is no
+    `?subject=` filter, so on a tenant-wide key you cannot tell one end user's runs from another's
+    without fetching each one. On a bound key you do not need to — the page only contains its own.
+  </Accordion>
+
+  <Accordion title="Usage and billing are the account's">
+    `GET /v1/usage` reports completed checkouts and gross merchandise volume for the tenant.
+    There is no per-subject breakdown, and a bound key cannot read it at all. Attribute spend
+    yourself from the `subject` on each checkout.
+  </Accordion>
+
+  <Accordion title="Key mode is a separate axis">
+    A bound key is still a `ck_test_` or `ck_live_` key, and mode is enforced independently — a
+    bound test key is confined to sandbox merchants exactly like any other test key. Binding a
+    key does not make it safe to spend, and making it live does not widen whose data it sees.
+  </Accordion>
+
+  <Accordion title="There is no subject registry">
+    Subjects are not objects. Nothing creates, lists, renames or deletes one; a subject exists
+    because a key or a row mentions the string. You cannot ask the API which subjects you have
+    used, so keep that list on your side — it is your user table.
+  </Accordion>
+
+  <Accordion title="Isolation is enforced at the API surface">
+    The rule is applied to authenticated requests. Our own orchestrator drives runs as the
+    system rather than on behalf of a caller, because it has to be able to complete any checkout
+    it is handed — so `subject` is a fence around your keys, not an encryption boundary. If your
+    threat model needs the latter, talk to us rather than inferring it from this page.
+  </Accordion>
+</AccordionGroup>
+
+## Adopting it on an existing account
+
+<Steps>
+  <Step title="Use the id you already have">
+    Your user table's primary key. Anything stable and opaque, up to 200 characters.
+  </Step>
+  <Step title="Create the buyer profile under that subject">
+    Either with a bound key (which stamps it automatically) or with your admin key and an
+    explicit `"subject"`. Do this **before** the first checkout for that user, because a profile
+    cannot be moved afterwards.
+  </Step>
+  <Step title="Mint one bound key per end user">
+    Keys are cheap and revocation is a timestamp, so a key per user — or per session — is a
+    reasonable shape. Narrow the scopes at the same time: `["checkouts.write"]` plus the
+    `buyerProfileId` in your own config is the tightest useful pair.
+  </Step>
+  <Step title="Keep one tenant-wide key for the account">
+    Wherever you keep your other deployment secrets. It is the only credential that can list
+    keys, read usage, manage webhooks, and see across your users — which is the point of it
+    being the one you do not hand to an agent.
+  </Step>
+</Steps>
+
+<Warning>
+**Rows created before you adopted this cannot be stamped.** Existing checkouts and buyer
+profiles have no subject, `PATCH` will not set one, and there is no backfill endpoint. A
+tenant-wide key still sees them all; a bound key sees only what was created for that subject
+after you started tagging. Plan for a cut-over date rather than a migration.
+</Warning>
+
+## Idempotency keys are namespaced by subject
+
+An [`Idempotency-Key`](/errors-and-limits#idempotency) is unique per `(tenant, subject)`, not
+per tenant. Two of your end users independently choosing `"order-1"` — a timestamp, a retry
+counter, a cart id — is ordinary, and they have no way to coordinate because they cannot see
+each other. Each gets their own checkout; neither can replay the other's.
+
+## Errors
+
+| Status | Message | Cause |
+| --- | --- | --- |
+| `400` | `Invalid request` / `Invalid profile` with `issues` | `subject` over 200 characters, or sent to `PATCH /v1/buyer-profiles/{id}` |
+| `400` | `buyerProfileId not found` | A bound key attaching another end user's profile |
+| `403` | `This API key is bound to subject '<s>' and cannot act for another.` | `POST /v1/checkouts` or `POST /v1/buyer-profiles` naming a different subject |
+| `403` | `This API key is bound to subject '<s>' and cannot issue keys for another.` | `POST /v1/api-keys` naming a different subject |
+| `403` | `A subject-bound key cannot list account keys.` | `GET /v1/api-keys` |
+| `403` | `A subject-bound key cannot revoke account keys.` | `DELETE /v1/api-keys/{id}` |
+| `403` | `A subject-bound key cannot read account usage.` | `GET /v1/usage` |
+| `403` | `A subject-bound key cannot manage webhook endpoints.` | Any `/v1/webhooks` call |
+| `404` | `Checkout not found` / `Profile not found` / `Session not found` | Another subject's row. Identical to "does not exist", deliberately — you learn nothing about what other end users have. |
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/authentication#binding-a-key-to-one-end-user">
+    Scopes, key mode, rotation — the other two dimensions of what a key may do.
+  </Card>
+  <Card title="Buyer profiles" icon="address-book" href="/buyer-profiles">
+    The identity a checkout ships to, and the row `subject` most matters on.
+  </Card>
+  <Card title="Buyer sessions" icon="cookie-bite" href="/buyer-sessions">
+    Stored merchant logins. They inherit isolation through the profile they belong to.
+  </Card>
+  <Card title="Idempotency" icon="rotate" href="/errors-and-limits#idempotency">
+    Safe retries on `POST /v1/checkouts`, keyed per end user.
+  </Card>
+</CardGroup>

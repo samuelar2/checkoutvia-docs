@@ -15,6 +15,7 @@ Success: `201`.
 curl -sX POST https://api.checkoutvia.com/v1/checkouts \
   -H "authorization: Bearer $CKV_KEY" \
   -H 'content-type: application/json' \
+  -H "idempotency-key: acme-4412" \
   -d '{
     "target": {
       "url": "https://example-store.com/products/widget",
@@ -24,10 +25,26 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
       "countryCode": "US"
     },
     "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+    "subject": "user_a91f",
     "constraints": { "maxCost": { "amount": "60.00", "currency": "USD" } },
     "metadata": { "orderRef": "acme-4412" }
   }'
 ```
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string">
+  Makes this create safe to retry. A second `POST` with the same key returns the **original**
+  checkout with `200` instead of starting a second run; the same key with a different body is a
+  `409`.
+
+  Strongly recommended on every create. Without it, a `POST` that times out after we accepted it
+  is indistinguishable from one that never landed, and the retry buys the item twice. Empty or
+  whitespace-only is treated as absent.
+
+  See [Idempotent creates](#idempotent-creates) below and
+  [Idempotency](/errors-and-limits#idempotency).
+</ParamField>
 
 ### Body
 
@@ -69,9 +86,22 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 
 <ParamField body="buyerProfileId" type="string">
   UUID of a [buyer profile](/api-reference/buyer-profiles) you own. Must exist and belong to
-  your tenant or you get `400 buyerProfileId not found`.
+  your tenant — and, on a [subject-bound key](/end-user-isolation), to the same end user — or
+  you get `400 buyerProfileId not found`.
 
   Without one the agent has no address or email, and most checkouts cannot be completed.
+</ParamField>
+
+<ParamField body="subject" type="string">
+  Your own id for the end user this purchase is for. Max 200 characters, opaque to us, never sent
+  to the merchant. Comes back on the checkout when set, and omitted when not.
+
+  On a [subject-bound key](/end-user-isolation) this is filled in for you: omit it and the
+  checkout is stamped with the key's subject; name a different one and the request is a `403`.
+  On a tenant-wide key it is how a row gets tagged in the first place.
+
+  It also namespaces the `Idempotency-Key` — two end users may use the same key string without
+  colliding.
 </ParamField>
 
 <ParamField body="constraints" type="object" default="{}">
@@ -97,6 +127,7 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 {
   "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
   "status": "queued",
+  "subject": "user_a91f",
   "target": {
     "kind": "direct_url",
     "url": "https://example-store.com/products/widget",
@@ -114,12 +145,48 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 }
 ```
 
+### Idempotent creates
+
+With an `Idempotency-Key` header, this endpoint has a second success code:
+
+| Response | When |
+| --- | --- |
+| `201` | First use of the key. A new checkout, a new run. |
+| `200` | The key has been used before with the same body. The **original** checkout, in whatever state it is in now — poll it, do not assume `queued`. |
+| `409` | The key has been used before with a **different** body. Nothing is created. |
+
+The body is hashed with its keys sorted and its defaults applied, so key order does not matter
+and `"constraints": {}` matches an omitted `constraints`. Keys live in a `(tenant, subject)`
+namespace and never expire.
+
+```json 409
+{
+  "error": true,
+  "message": "This Idempotency-Key was already used with a different request body.",
+  "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345"
+}
+```
+
+Two concurrent retries of the same request do not race into two purchases: the database picks a
+winner and the loser returns the winner's checkout with `200`.
+
+A replay is checked before the quota, so it does not consume one of your active-checkout slots,
+and does not launch a second browser. It is checked *after* URL and sandbox validation, so a
+replay of a request whose target has since become unreachable can still return `400`.
+
+<Note>
+This is idempotency of the **call**, not of the run. Once a checkout is `failed`, its key returns
+that failure for as long as the row exists. Retrying for real means a new checkout and a new key.
+</Note>
+
 ### Errors
 
 | Status | Message |
 | --- | --- |
 | `400` | `Invalid request` (with `issues`), `buyerProfileId not found` |
 | `403` | Sandbox confinement — the account is sandbox-only, or the request used a `ck_test_` key. Body carries `sandboxMerchants`. See [Sandbox](/sandbox). |
+| `403` | `This API key is bound to subject '<s>' and cannot act for another.` — a [bound key](/end-user-isolation) named a different `subject`. |
+| `409` | `This Idempotency-Key was already used with a different request body.` Carries `checkoutId`. |
 | `429` | `Active checkout limit reached (5). …`, `Daily checkout limit reached (200 per 24h).` |
 
 ```json 403
@@ -155,6 +222,12 @@ action.
 
 <ResponseField name="status" type="string" required>
   `queued` · `running` · `awaiting_user_action` · `succeeded` · `failed` · `cancelled`.
+</ResponseField>
+
+<ResponseField name="subject" type="string">
+  **Omitted** when the checkout is not tagged to an end user. Your own id when it is — set
+  explicitly at creation, or stamped from the key's binding. See
+  [End-user isolation](/end-user-isolation).
 </ResponseField>
 
 <ResponseField name="target" type="object" required>
@@ -209,6 +282,14 @@ action.
   Always absent on a terminal checkout — cancelling or failing a run expires any question
   still open, so `succeeded`, `failed` and `cancelled` never advertise a pending action.
 
+  `detectedTotal` is what the merchant's own checkout says this order costs — **shipping and tax
+  included** — read off the live page at the moment the run stopped to ask. Present on `card`
+  actions. **Show it to your user before you answer**: after that the money has moved, and
+  `receipt.total` only exists once the checkout has succeeded, which is too late to be a
+  confirmation step. It is best-effort, so treat it as optional — omitted entirely when no total
+  could be parsed, and `currency` can be absent when the page shows a bare number. A confident
+  wrong price would be worse than no price, so nothing is guessed.
+
   See [User actions](/user-actions).
 </ResponseField>
 
@@ -238,7 +319,8 @@ action.
 
 ### Errors
 
-`404 Checkout not found` — including when it belongs to another tenant.
+`404 Checkout not found` — including when it belongs to another tenant, or to another end user
+on a [subject-bound key](/end-user-isolation).
 
 ---
 
@@ -323,6 +405,13 @@ timeline, which is exactly what a list view must not fetch.
   Pass back as `?cursor=`. `null` on the last page.
 </ResponseField>
 
+<Note>
+The summary carries **no `subject`**, and there is no `?subject=` filter. A
+[subject-bound key](/end-user-isolation) sees only its own end user's checkouts here, so it does
+not need one; a tenant-wide key sees everybody's and cannot tell them apart without fetching each
+checkout. Keep your own map from checkout id to user at creation time.
+</Note>
+
 ---
 
 ## Cancel a checkout
@@ -382,19 +471,6 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
 </ResponseField>
 <ResponseField name="url" type="string">
   Ready to drop into an `<iframe src>`. Contains the token.
-</ResponseField>
-<ResponseField name="detectedTotal" type="object">
-  What the merchant's own checkout says this order costs — **shipping and tax included** —
-  read off the live page at the moment the run stopped to ask. `{ "amount": "61.40",
-  "currency": "GBP" }`.
-
-  Present on `card` actions. **Show it to your user before you answer.** After that the money
-  has moved: `receipt.total` only exists once the checkout has succeeded, which is too late to
-  be a confirmation step.
-
-  Best-effort, so treat it as optional. It is omitted entirely when no total could be parsed,
-  and `currency` can be absent when the page shows a bare number — a confident wrong price
-  would be worse than no price, so nothing is guessed.
 </ResponseField>
 
 <ResponseField name="expiresAt" type="string">

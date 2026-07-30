@@ -73,6 +73,17 @@ Three others carry a machine-readable field, all to do with
 }
 ```
 
+And one more, on an [idempotency](#idempotency) conflict — `checkoutId` names the checkout the
+key already refers to:
+
+```json 409 — Idempotency-Key reused with a different body
+{
+  "error": true,
+  "message": "This Idempotency-Key was already used with a different request body.",
+  "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345"
+}
+```
+
 <Note>
 Two endpoints break the JSON pattern: `DELETE /v1/checkouts/{id}` returns `202` with an empty
 body, and the `/embed` routes return plain text (`Invalid or expired embed token`) because
@@ -83,14 +94,14 @@ they are consumed by a browser, not an API client.
 
 | Code | When |
 | --- | --- |
-| `200` | Successful read, successful action submit, successful revoke/delete. |
+| `200` | Successful read, successful action submit, successful revoke/delete. Also an [idempotent replay](#idempotency) of `POST /v1/checkouts`. |
 | `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
-| `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist. |
+| `400` | Malformed or invalid body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or belongs to another end user. |
 | `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account; a key trying to mint a broader key; signup closed. |
-| `404` | Not found, or owned by another tenant — the two are not distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
-| `409` | The action you are answering is already `submitted`, `declined` or `expired`. |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; signup closed. |
+| `404` | Not found, or owned by another tenant — or by another end user. None of the three are distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
+| `409` | The action you are answering is already `submitted`, `declined` or `expired`; or an `Idempotency-Key` was reused with a different body. |
 | `429` | A quota was hit. See below. |
 
 ### The 404s
@@ -107,15 +118,101 @@ they are consumed by a browser, not an API client.
 Every lookup is scoped to the authenticated tenant. Another tenant's checkout is a `404`, not
 a `403` — you learn nothing about whether it exists.
 
-### The 409
+### The 409s
 
 ```json
 { "error": true, "message": "Action already submitted" }
 ```
 
-This is also your idempotency signal. If your own submit retries and comes back
-`Action already submitted`, the first attempt landed — poll the checkout rather than treating
-it as a failure.
+On `POST /v1/checkouts/{id}/actions/{actionId}`, this is also your idempotency signal. If your
+own submit retries and comes back `Action already submitted`, the first attempt landed — poll
+the checkout rather than treating it as a failure.
+
+On `POST /v1/checkouts`, a `409` means something different: an `Idempotency-Key` you have used
+before, with a different body. See below.
+
+## Idempotency
+
+`POST /v1/checkouts` accepts an `Idempotency-Key` request header. Send the same key twice and
+the second call returns the **original** checkout with `200` instead of creating a second one.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -H "idempotency-key: acme-4412" \
+  -d '{"target":{"url":"https://your-sandbox-store.myshopify.com/products/widget","request":"buy this in medium"}}'
+```
+
+<Warning>
+**It is opt-in, and the failure mode is a duplicate purchase.** With no header, two identical
+`POST`s are two checkouts, two browsers and two orders. A `POST` that times out after we
+accepted it is indistinguishable, from your side, from one that never landed — and every HTTP
+client, job runner and agent framework retries a timeout by default. Set the header on every
+create you might retry, which is all of them.
+</Warning>
+
+| Situation | Result |
+| --- | --- |
+| New key | `201` and a new checkout, exactly as without the header. |
+| Same key, same body | `200` and the original checkout. |
+| Same key, different body | `409`, and nothing is created. |
+| Same key, two concurrent requests | Both get the same checkout — one `201`, one `200`. |
+| No header, same body twice | Two checkouts. Two purchases. |
+
+### What "same body" means
+
+The body is hashed after parsing, and object keys are sorted first, so two clients serialising
+the same request are under no obligation to agree on key order. Defaults are applied before
+hashing too: omitting `constraints` and sending `"constraints": {}` are the same request.
+
+Reusing a key with a genuinely different body is a caller bug, so it is refused rather than
+quietly answered with a checkout for something else:
+
+```json 409
+{
+  "error": true,
+  "message": "This Idempotency-Key was already used with a different request body.",
+  "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345"
+}
+```
+
+`checkoutId` points at what the key already refers to, so you can inspect it and decide whether
+your retry was the mistake or the key was.
+
+### Scope and lifetime
+
+- Keys are scoped per **(tenant, `subject`)**, not globally. Two of your
+  [end users](/end-user-isolation) may pick the same string — `"order-1"`, a timestamp, a retry
+  counter — and neither can replay the other's checkout. A tenant-wide key shares one namespace
+  across everything it creates untagged.
+- **There is no expiry.** A key is remembered for as long as the checkout row exists, so a key
+  reused a month later still replays. Make yours unique per *purchase*, not per attempt — your
+  own order reference, or a UUID minted when the user confirmed — and reuse it across the
+  retries of that one purchase.
+- The namespace belongs to the account and the end user, never to the credential. Rotate your
+  API key and a replay of yesterday's key still works; two keys bound to *different* subjects
+  never collide.
+- An empty or whitespace-only header is treated as absent.
+
+### What a replay actually returns
+
+The checkout **as it is now**, not a recording of the original response. A retry ninety seconds
+later returns the same id with `status: "running"` and a timeline that has grown — possibly with
+a `pendingUserAction` waiting on you. Treat the `200` as "this already exists, here is its
+current state", and branch on `status` rather than assuming `queued`.
+
+A replay also does not consume quota, does not launch a second browser, and does not re-enqueue
+the run.
+
+<Note>
+Idempotency covers **creation only**. It is not a retry of a failed run: once a checkout has
+failed, reusing its key returns that failed checkout forever. To try again, create a new
+checkout with a new key.
+
+No other endpoint reads the header. Answering a user action is made safe by its own `409`
+instead — see [The 409s](#the-409s).
+</Note>
 
 ## Quotas
 
@@ -243,7 +340,9 @@ them rather than discover them.
   </Accordion>
 
   <Accordion title="No retry, replay or clone of a checkout">
-    A failed checkout is final. Create a new one with the same body.
+    A failed checkout is final. Create a new one with the same body — and a new
+    [`Idempotency-Key`](#idempotency), since reusing the old one just hands you back the failure.
+    `Idempotency-Key` deduplicates the *call*, not the run.
   </Accordion>
 
   <Accordion title="No search across checkouts">

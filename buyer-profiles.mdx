@@ -34,6 +34,7 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 {
   "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
   "label": "ada-home",
+  "subject": null,
   "name": { "first": "Ada", "last": "Lovelace" },
   "contact": { "email": "ada@example.com", "phone": "+15555550123" },
   "shipping": {
@@ -54,6 +55,15 @@ you gave it.
 
 <ResponseField name="label" type="string">
   Yours, for your own bookkeeping. Never sent to a merchant.
+</ResponseField>
+
+<ResponseField name="subject" type="string">
+  Your own id for the end user this profile *is*. Optional, max 200 characters, opaque to us,
+  never sent to a merchant. Set it and an API key bound to that subject sees this profile while
+  no other end user's key can — see [End-user isolation](/end-user-isolation).
+
+  It comes back as `null` on an untagged profile, and it **cannot be changed after creation**:
+  `PATCH` with `subject` is a `400`, not a silent no-op. Decide before you create.
 </ResponseField>
 
 <ResponseField name="name" type="object">
@@ -111,6 +121,7 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
     {
       "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
       "label": "ada-home",
+      "subject": null,
       "name": { "first": "Ada", "last": "Lovelace" },
       "contact": { "email": "ada@example.com", "phone": "+15555550123" },
       "shipping": { "addressLines": ["1 Analytical Way"], "locality": "Louisville", "administrativeAreaCode": "KY", "postalCode": "40202", "countryCode": "US" },
@@ -167,9 +178,13 @@ Send a whole `shipping` object or none at all.
 -d '{"shipping":{"postalCode":"NW1 6XE"}}'
 ```
 
-Two smaller behaviours:
+Three smaller behaviours:
 
 - An empty body is a `400 No fields to update`, not a no-op that quietly succeeds.
+- `subject` is rejected, not ignored — a `400` with an `unrecognized_keys` issue. A profile
+  cannot be reassigned to a different end user, and a caller attempting it should be told so
+  rather than getting a `200` and a profile that has not moved. See
+  [End-user isolation](/end-user-isolation#a-profile-cannot-be-reassigned).
 - Send `"name": null` to **clear** a document outright — that is how you remove an address you
   no longer want us holding, short of deleting the whole profile. `"name": {}` stores an empty
   object instead, which is a different thing.
@@ -228,3 +243,9 @@ at that merchant starts logged in.
 
 That means the profile id is not just an address book entry. Reusing one profile across
 unrelated end users would share their merchant logins. One profile per end user.
+
+If you serve many end users, say which one each profile belongs to: set `subject` at creation
+and issue your agent a key bound to it. That turns "one profile per end user" from a convention
+you maintain into a fence the API enforces — a key for one buyer cannot read, patch, delete or
+ship to another's profile, and cannot list them either. See
+[End-user isolation](/end-user-isolation).

@@ -70,6 +70,7 @@ curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
 {
   "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
   "label": "default",
+  "subject": null,
   "name": { "first": "Ada", "last": "Lovelace" },
   "contact": { "email": "ada@example.com", "phone": "+15555550123" },
   "shipping": {
@@ -95,6 +96,7 @@ the order can never be placed.
 curl -sX POST https://api.checkoutvia.com/v1/checkouts \
   -H "authorization: Bearer $CKV_KEY" \
   -H 'content-type: application/json' \
+  -H "idempotency-key: $(uuidgen)" \
   -d '{
     "target": {
       "url": "https://your-sandbox-store.myshopify.com/products/widget",
@@ -135,6 +137,14 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 ```bash
 export CKV_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
 ```
+
+<Tip>
+`Idempotency-Key` is what makes a create safe to retry: send the same key twice and you get the
+original checkout back with `200` instead of buying the item again. A fresh `uuidgen` per run is
+right here because each run of this command is a new intent; in your own code the key should come
+from the *purchase* — a cart id, an order row — so that a retry of that purchase reuses it. See
+[Idempotency](/errors-and-limits#idempotency).
+</Tip>
 
 ## 4. Poll
 
@@ -384,6 +394,9 @@ async function main() {
 
   let checkout = await api("/v1/checkouts", {
     method: "POST",
+    // Makes this create safe to retry: the same key returns the original checkout instead of
+    // buying twice. Derive it from the purchase, not from the attempt.
+    headers: { "idempotency-key": crypto.randomUUID() },
     body: JSON.stringify({
       target: {
         url: "https://your-sandbox-store.myshopify.com/products/widget",

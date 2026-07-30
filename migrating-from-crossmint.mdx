@@ -181,8 +181,15 @@ The four things worth migrating *for*.
   </Card>
 </CardGroup>
 
-Two smaller ones worth knowing about:
+Four smaller ones worth knowing about:
 
+- **Idempotent creates.** `POST /v1/checkouts` takes an `Idempotency-Key` header; a replay
+  returns the original checkout with `200` rather than buying the item again. Worth wiring in
+  during the port, while you are already touching the create call — see
+  [Idempotency](/errors-and-limits#idempotency).
+- **Per-end-user key isolation.** A key can be bound to one of your end users with `subject`,
+  after which it sees and creates only that person's checkouts and buyer profiles and is refused
+  on the account-wide endpoints. See [End-user isolation](/end-user-isolation).
 - **Usage you can query.** `GET /v1/usage` returns completed checkouts by day plus gross
   merchandise volume by currency. We meter completed checkouts, never attempts — charging for
   attempts would mean earning more when the agent fails, which is backwards for a product
@@ -221,8 +228,12 @@ Two smaller ones worth knowing about:
     Including `decline`, expiry, and a deliberate `max_cost_exceeded`. Diff a real response
     against your parser before you point at a real merchant.
   </Step>
+  <Step title="Add an Idempotency-Key to your create call">
+    While you are in there. Whatever your old client did on a timeout, it now has a safe answer:
+    the same key returns the same checkout instead of a second order.
+  </Step>
   <Step title="Then take the upgrades">
     Register a webhook endpoint and delete your polling loop. Add the live view to your
-    operator console.
+    operator console. If one agent acts for many of your users, issue it a `subject`-bound key.
   </Step>
 </Steps>

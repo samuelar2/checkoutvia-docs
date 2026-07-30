@@ -14,12 +14,21 @@ POST /v1/api-keys
 
 Success: `201`.
 
-```bash
+<CodeGroup>
+```bash Tenant-wide
 curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   -H "authorization: Bearer $CKV_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write"]}'
 ```
+
+```bash Bound to one end user
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write"],"subject":"user_a91f"}'
+```
+</CodeGroup>
 
 <ParamField body="mode" type='"test" | "live"' default="test">
   Determines both the key's prefix and what it can reach.
@@ -54,17 +63,36 @@ curl -sX POST https://api.checkoutvia.com/v1/api-keys \
   poll, cancel and answer checkouts. Scopes are fixed at creation — there is no re-scoping.
 </ParamField>
 
-An empty body is valid and produces a full-access `test` key.
+<ParamField body="subject" type="string">
+  Bind the key to one of your end users. Max 200 characters, your own opaque id — we never
+  generate one. **Omit for a tenant-wide key**, which is what every key issued before this
+  existed already is.
 
-```json Response (201)
+  A bound key sees and creates only that subject's checkouts and buyer profiles, and is refused
+  outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`,
+  `/v1/webhooks`). Fixed at creation — there is no rebinding and no unbinding.
+
+  Minting from a bound key **inherits** the binding: omitting `subject` gives you another key for
+  the same end user, not a tenant-wide one, and naming a different subject is a `403`. Full
+  contract in [End-user isolation](/end-user-isolation).
+</ParamField>
+
+An empty body is valid and produces a full-access `test` key — tenant-wide, unless the key you
+called with is itself bound.
+
+```json Response (201) — the bound variant
 {
   "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
   "mode": "live",
   "scopes": ["checkouts.write"],
+  "subject": "user_a91f",
   "keyPrefix": "ck_live_9Hf2QzT",
   "key": "ck_live_9Hf2QzT0mHq9pP2rVwXk1tLb"
 }
 ```
+
+`subject` appears here **only when the key is bound**. A tenant-wide key's creation response has
+no `subject` field at all.
 
 <Warning>
 `key` is returned exactly once, here. Only `sha256(key)` is stored — no endpoint, support
@@ -83,7 +111,9 @@ process or database query can recover it.
 | `400` | `Invalid request` (with `issues`) — `mode` was not `test` or `live`, or `scopes` was empty / over 32 entries | `issues` |
 | `400` | `Unknown scope(s): …` — a string that is not in the valid set | `validScopes` |
 | `403` | `This account is sandbox-only. Live keys require activation.` | — |
+| `403` | `A test key cannot issue a live key. Use a live key, or activate the account.` | — |
 | `403` | `A key cannot grant scopes it does not itself hold.` | `heldScopes` |
+| `403` | `This API key is bound to subject '<s>' and cannot issue keys for another.` | — |
 
 ```json 400 — bad scope string
 {
@@ -127,9 +157,10 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
   "keys": [
     {
       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
-      "label": "shopping-agent",
+      "label": "agent for user_a91f",
       "mode": "live",
       "scopes": ["checkouts.write"],
+      "subject": "user_a91f",
       "keyPrefix": "ck_live_9Hf2QzT",
       "lastUsedAt": "2026-07-29T09:14:31.190Z",
       "revokedAt": null,
@@ -140,6 +171,7 @@ curl -s https://api.checkoutvia.com/v1/api-keys \
       "label": "ci",
       "mode": "test",
       "scopes": ["*"],
+      "subject": null,
       "keyPrefix": "ck_test_3sQd7yQ",
       "lastUsedAt": null,
       "revokedAt": "2026-07-27T11:44:09.331Z",
@@ -156,10 +188,23 @@ Listing never returns a secret. `keyPrefix` is the most a list can show. It does
 `scopes`, which is how you audit what each outstanding key can reach; `["*"]` is a full-access
 key.
 
+<ResponseField name="subject" type="string | null">
+  Always present here, unlike on the creation response. `null` is a tenant-wide key; a string is
+  a key bound to that one end user. This listing is the only place you can audit which of your
+  keys act for whom — see [End-user isolation](/end-user-isolation).
+</ResponseField>
+
 <ResponseField name="lastUsedAt" type="string | null">
   Written best-effort on every authenticated request; never blocks it. A good rotation signal,
   not an audit log.
 </ResponseField>
+
+<Warning>
+A [subject-bound key](/end-user-isolation) cannot call this endpoint or `DELETE /v1/api-keys/{id}`
+— both are `403`. The key list is a tenant-wide fact, and revocation is a tenant-wide power: a
+credential acting for one end user must not be able to enumerate its siblings or take the
+account's own key offline.
+</Warning>
 
 ---
 

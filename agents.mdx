@@ -43,6 +43,52 @@ there. Create the checkout, persist the id, and drive the rest from a job, a cro
 [webhook](/webhooks) that wakes you on each status change.
 </Note>
 
+## Send an Idempotency-Key. Always.
+
+This is the first thing to get right, ahead of the tool definitions, because the worst thing
+this product can do is buy the same thing twice — and **your framework will retry a transport
+error by default**. Every agent runtime worth using retries a timed-out tool call. A `POST` that
+times out *after* we accepted it looks identical, from your side, to one that never landed.
+
+```ts
+await fetch(`${BASE}/v1/checkouts`, {
+  method: "POST",
+  headers: {
+    authorization: `Bearer ${KEY}`,
+    "content-type": "application/json",
+    // One key per purchase intent. Retries of that intent reuse it.
+    "idempotency-key": intentId,
+  },
+  body,
+});
+```
+
+Send it and a duplicate `POST` returns the original checkout with `200` instead of starting a
+second run: same id, same browser, one order. Omit it and you have a race between your retry
+policy and your user's card.
+
+<Warning>
+**The key must not come from the model.** Generate it in your tool handler from something stable
+about the *intent* — your cart id, your order row's primary key, a UUID you mint when the user
+says yes — and reuse it across retries of that intent. A model asked for an idempotency key will
+invent a fresh one on each attempt, which is exactly the same as not sending one. Do not put it
+in the tool schema.
+</Warning>
+
+Two more properties worth knowing before you rely on it:
+
+- **A replay returns the checkout as it is now**, not the original `queued` response. A retry
+  ninety seconds later comes back `running`, possibly with a `pendingUserAction` already waiting.
+  Branch on `status`; do not assume `queued`.
+- **The same key with a different body is a `409`**, and the error carries the `checkoutId` it
+  already refers to. That is a bug in your handler — usually a key derived from the user's turn
+  rather than from the purchase — surfaced rather than silently resolved in favour of whichever
+  body arrived first.
+
+It does not make a *failed run* retryable: reusing that key returns the failure for good. A real
+retry is a new checkout with a new key. Full behaviour, including how the body is hashed and how
+keys are namespaced per end user, in [Idempotency](/errors-and-limits#idempotency).
+
 ## Give the agent a narrow key
 
 Scopes exist for exactly this situation. The holder of a key is an autonomous process, and the
@@ -66,6 +112,24 @@ Drop `buyer-profiles.read` and hand the agent a `buyerProfileId` in its system p
 Attaching a profile to a checkout does not require reading it, so an agent scoped to
 `["checkouts.write"]` alone can still ship to a stored address it can never enumerate.
 </Tip>
+
+### If your agent acts for more than one person
+
+Add `"subject": "<your user id>"` to the key you mint, and that key can only ever see and create
+rows for that one end user:
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.read"],"subject":"user_a91f"}'
+```
+
+Scopes decide what the agent may do; `subject` decides whose data it may do it to. That second
+axis matters here specifically because your agent reads merchant pages, and `list_buyer_profiles`
+is a completely plausible call for a model that has been talked into something. On a tenant-wide
+key that call returns every buyer you have ever stored. On a bound key it returns one person, and
+there is nothing the model can say to widen it. See [End-user isolation](/end-user-isolation).
 
 ## Tool definitions
 
@@ -375,12 +439,15 @@ const KEY = process.env.CKV_KEY!;
 
 type Json = Record<string, any>;
 
-async function api(path: string, init: RequestInit = {}): Promise<Json> {
+async function api(path: string, init: RequestInit & { idempotencyKey?: string } = {}): Promise<Json> {
+  const { idempotencyKey, ...rest } = init;
   const res = await fetch(`${BASE}${path}`, {
-    ...init,
+    ...rest,
     headers: {
       authorization: `Bearer ${KEY}`,
       "content-type": "application/json",
+      // Only POST /v1/checkouts reads this. Everything else ignores it.
+      ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
       ...(init.headers ?? {}),
     },
   });
@@ -425,9 +492,12 @@ function forModel(checkout: Json) {
 }
 
 export const handlers = {
-  async create_checkout(a: Json) {
+  // `intentId` is yours, not the model's: the cart row, the order id, a UUID minted when the
+  // user confirmed. Pass the same one on every retry of that purchase.
+  async create_checkout(a: Json, intentId: string) {
     const checkout = await api("/v1/checkouts", {
       method: "POST",
+      idempotencyKey: intentId,
       body: JSON.stringify({
         target: { url: a.url, ...(a.request ? { request: a.request } : {}) },
         ...(a.buyerProfileId ? { buyerProfileId: a.buyerProfileId } : {}),
@@ -523,7 +593,9 @@ authorise a payment.
 | `failed`, `"automation_failed"` | The run could not get through the merchant's checkout. Read the last few `progressItems` before retrying — a second identical attempt usually fails identically. |
 | `cancelled` | You called `DELETE /v1/checkouts/{id}`. |
 
-There is no retry, replay or clone. Create a new checkout with the same body.
+There is no retry, replay or clone of a finished run. Create a new checkout with the same body —
+and a **new** `Idempotency-Key`, because the old one now points at the failure and will keep
+returning it.
 
 ## The zero-code option: MCP
 
@@ -559,6 +631,11 @@ Five tools:
 
 At the card step the server leads with the merchant's own order total, because that is the
 last moment the price can be questioned before money moves.
+
+`checkoutvia_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
+`Idempotency-Key` and will not invent one on your behalf, so two calls are two purchases. Your
+MCP client's own retry or approval behaviour is what stands between a flaky connection and a
+second order — another reason a production integration talks to the HTTP API.
 
 It **refuses card, credentials and OTP values as tool arguments**, by design and for the reason
 above: those are not things a model should be holding. When a run blocks on one of them, the

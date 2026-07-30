@@ -40,6 +40,18 @@ it.
   Yours, for bookkeeping. Never sent to a merchant.
 </ParamField>
 
+<ParamField body="subject" type="string">
+  Your own id for the end user this profile belongs to. Max 200 characters, opaque to us, never
+  sent to a merchant.
+
+  On a [subject-bound key](/end-user-isolation) it is filled in for you — omit it and the profile
+  is stamped with the key's subject; name a different one and the request is a `403`. On a
+  tenant-wide key it is how you tag a profile so that a bound key can later reach it and no other
+  end user's key can.
+
+  **Create-only.** `PATCH` rejects it; a profile cannot be reassigned.
+</ParamField>
+
 <ParamField body="name" type="object">
   <Expandable title="name">
     <ParamField body="first" type="string" />
@@ -90,6 +102,7 @@ typed exactly as sent.
 {
   "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
   "label": "ada-home",
+  "subject": null,
   "name": { "first": "Ada", "last": "Lovelace" },
   "contact": { "email": "ada@example.com", "phone": "+15555550123" },
   "shipping": {
@@ -103,7 +116,8 @@ typed exactly as sent.
 }
 ```
 
-Omitted sub-objects come back as `null`, not as `{}`.
+Omitted sub-objects come back as `null`, not as `{}`. `subject` is always present and `null` on
+an untagged profile — unlike a checkout, which omits the field entirely.
 
 `400 Invalid profile` with `issues` on a type mismatch.
 
@@ -122,7 +136,8 @@ curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
   -H "authorization: Bearer $CKV_KEY"
 ```
 
-Same object as create. `404 Profile not found` if it does not exist or is not yours.
+Same object as create. `404 Profile not found` if it does not exist, is not yours, or belongs to
+another end user on a [subject-bound key](/end-user-isolation).
 
 ---
 
@@ -153,6 +168,7 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
     {
       "id": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
       "label": "ada-home",
+      "subject": null,
       "name": { "first": "Ada", "last": "Lovelace" },
       "contact": { "email": "ada@example.com", "phone": "+15555550123" },
       "shipping": { "addressLines": ["1 Analytical Way"], "locality": "Louisville", "administrativeAreaCode": "KY", "postalCode": "40202", "countryCode": "US" },
@@ -164,6 +180,9 @@ curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
 ```
 
 Newest first. `nextCursor: null` means the last page.
+
+On a [subject-bound key](/end-user-isolation) this page contains only that end user's profiles.
+There is no `?subject=` filter for a tenant-wide key — read `subject` off each row.
 
 ---
 
@@ -201,26 +220,46 @@ untouched; **supply a key and its document is replaced wholesale**. There is no 
 throws the address away and stores one that is only a postcode. Send the whole object.
 </Warning>
 
-<ParamField body="label" type="string">
-  Replaces the stored label. Cannot be set back to `null`.
+<ParamField body="label" type="string | null">
+  Replaces the stored label. `null` clears it.
 </ParamField>
-<ParamField body="name" type="object">
-  Replaces the whole `name` document. Send `{}` to empty it.
+<ParamField body="name" type="object | null">
+  Replaces the whole `name` document. `null` clears it; `{}` stores an empty object, which is a
+  different thing.
 </ParamField>
-<ParamField body="contact" type="object">
-  Replaces the whole `contact` document.
+<ParamField body="contact" type="object | null">
+  Replaces the whole `contact` document. `null` clears it.
 </ParamField>
-<ParamField body="shipping" type="object">
-  Replaces the whole `shipping` document.
+<ParamField body="shipping" type="object | null">
+  Replaces the whole `shipping` document. `null` clears it — this is how you remove an address you
+  no longer want us holding, short of deleting the profile.
 </ParamField>
+
+`subject` is **not** accepted here. Unlike create, this schema is strict.
 
 ### Errors
 
 | Status | Message |
 | --- | --- |
 | `400` | `No fields to update` — the body parsed but contained none of the four keys |
-| `400` | `Invalid profile` (with `issues`) — type mismatch, or an explicit `null` for a sub-object |
+| `400` | `Invalid profile` (with `issues`) — type mismatch, or any key outside the four |
 | `404` | `Profile not found` |
+
+The schema is strict, so an unexpected key is a `400` rather than a silently dropped field. That
+is most likely to bite you with `subject`:
+
+```json 400
+{
+  "error": true,
+  "message": "Invalid profile",
+  "issues": [
+    { "code": "unrecognized_keys", "keys": ["subject"], "path": [], "message": "Unrecognized key(s) in object: 'subject'" }
+  ]
+}
+```
+
+A profile cannot be moved to another end user after creation. See
+[End-user isolation](/end-user-isolation#a-profile-cannot-be-reassigned).
 
 ---
 

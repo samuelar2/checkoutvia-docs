@@ -20,8 +20,16 @@ curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_I
 ```
 
 <ParamField query="buyerProfileId" type="string">
-  Optional. Omit to list every session for the tenant.
+  Optional. Omit to list every session for the tenant — or, on a
+  [subject-bound key](/end-user-isolation), every session belonging to that one end user.
 </ParamField>
+
+<Note>
+Sessions have no `subject` of their own. They belong to a buyer profile, and the profile is what
+carries the identity, so isolation is applied by joining to it: one place holding "who is this"
+rather than two places to forget to filter. A bound key sees only the sessions of its own end
+user's profiles, and `DELETE` on anyone else's is a `404`.
+</Note>
 
 Not paginated. Ordered by `updatedAt` descending.
 

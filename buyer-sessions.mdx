@@ -105,6 +105,11 @@ Metadata only. There is no endpoint, for you or for us, that returns the cookie 
 `buyerProfileId` query parameter is optional; omit it to list every session for the tenant,
 newest-updated first. This list is not paginated.
 
+A session has no `subject` of its own — it belongs to a buyer profile, and the profile is what
+carries the identity. So a key bound to an end user sees only the sessions hanging off that
+person's profiles, without sessions needing a second copy of "who is this" to forget to filter
+on. See [End-user isolation](/end-user-isolation).
+
 `lastUsedAt` is stamped when a session is loaded into a run, so it tells you whether a stored
 login is actually doing anything.
 

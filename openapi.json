@@ -183,8 +183,13 @@
           "Checkouts"
         ],
         "summary": "Create a checkout",
-        "description": "Returns immediately with a `queued` checkout. The run happens asynchronously in a durable orchestrator, so a client crash or a network blip never orphans a half-finished purchase.\n\nRequires the `checkouts.write` scope.",
+        "description": "Returns immediately with a `queued` checkout. The run happens asynchronously in a durable orchestrator, so a client crash or a network blip never orphans a half-finished purchase.\n\nRequires the `checkouts.write` scope.\n\n**Retries.** Send an `Idempotency-Key` header and a duplicate `POST` returns the original checkout with `200` rather than buying the item twice. Without one, two identical requests are two runs and two orders.",
         "operationId": "createCheckout",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -212,6 +217,59 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "An `Idempotency-Key` replay: this key has already been used with this body. The original checkout, **as it is now** \u2014 not a recording of the original `201`, so the status may have moved on and a `pendingUserAction` may already be waiting. Nothing was created, no quota was consumed, and no second browser was launched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Checkout"
+                },
+                "example": {
+                  "id": "1f2e3d4c-5b6a-4790-8123-abcdef012345",
+                  "status": "running",
+                  "target": {
+                    "kind": "direct_url",
+                    "url": "https://your-sandbox-store.myshopify.com/products/widget",
+                    "request": "buy this in medium, cheapest delivery"
+                  },
+                  "constraints": {
+                    "maxCost": {
+                      "amount": "60.00",
+                      "currency": "USD"
+                    }
+                  },
+                  "buyerProfileId": "b3a1c0de-2f77-45a0-9c8e-6f4b2a1d9e30",
+                  "metadata": {
+                    "orderRef": "acme-4412"
+                  },
+                  "browser": {
+                    "embedTokenUrl": "/v1/checkouts/1f2e3d4c-5b6a-4790-8123-abcdef012345/embed-token",
+                    "permissions": [
+                      "read"
+                    ]
+                  },
+                  "progressItems": [
+                    {
+                      "kind": "intent_started",
+                      "label": "Started checkout",
+                      "data": {},
+                      "at": "2026-07-29T09:14:31.203Z",
+                      "sequence": 1
+                    },
+                    {
+                      "kind": "step",
+                      "label": "Browser session started",
+                      "data": {},
+                      "at": "2026-07-29T09:15:12.884Z",
+                      "sequence": 2
+                    }
+                  ],
+                  "createdAt": "2026-07-29T09:14:31.190Z",
+                  "updatedAt": "2026-07-29T09:15:12.901Z"
+                }
+              }
+            }
+          },
           "201": {
             "description": "Queued.",
             "content": {
@@ -293,7 +351,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Sandbox confinement, a suspended tenant, or a missing scope.",
+            "description": "Sandbox confinement, a suspended tenant, a missing scope, or a subject-bound key acting for another end user.",
             "content": {
               "application/json": {
                 "schema": {
@@ -327,7 +385,29 @@
                       "message": "This API key is missing the 'checkouts.write' scope.",
                       "requiredScope": "checkouts.write"
                     }
+                  },
+                  "boundToAnotherSubject": {
+                    "summary": "A subject-bound key naming a different end user",
+                    "value": {
+                      "error": true,
+                      "message": "This API key is bound to subject 'user_a91f' and cannot act for another."
+                    }
                   }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The `Idempotency-Key` has been used before with a different request body. Nothing is created. Reusing a key for a different purchase is a caller bug \u2014 usually a key derived from the attempt rather than from the purchase \u2014 so it is refused rather than silently answered with a checkout for something else.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdempotencyConflict"
+                },
+                "example": {
+                  "error": true,
+                  "message": "This Idempotency-Key was already used with a different request body.",
+                  "checkoutId": "1f2e3d4c-5b6a-4790-8123-abcdef012345"
                 }
               }
             }
@@ -880,14 +960,14 @@
           "Buyer profiles"
         ],
         "summary": "Create a buyer profile",
-        "description": "Every field is optional \u2014 `{}` is a valid profile \u2014 but the agent can only fill what you gave it. Values are stored and typed exactly as sent: no normalisation, no address validation, no correction.\n\nOne profile per end user. A profile is the identity that stored merchant sessions hang off, so reusing one across unrelated buyers would share their merchant logins.\n\nRequires the `buyer-profiles.write` scope.",
+        "description": "Every field is optional \u2014 `{}` is a valid profile \u2014 but the agent can only fill what you gave it. Values are stored and typed exactly as sent: no normalisation, no address validation, no correction.\n\nOne profile per end user. A profile is the identity that stored merchant sessions hang off, so reusing one across unrelated buyers would share their merchant logins.\n\nRequires the `buyer-profiles.write` scope.\n\nSet `subject` to say which of your end users this profile is for. A key bound to that subject can then reach it and no other end user's key can.",
         "operationId": "createBuyerProfile",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BuyerProfileInput"
+                "$ref": "#/components/schemas/BuyerProfileCreate"
               },
               "example": {
                 "label": "ada-home",
@@ -1063,7 +1143,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BuyerProfileInput"
+                "$ref": "#/components/schemas/BuyerProfilePatch"
               },
               "examples": {
                 "moveHouse": {
@@ -1324,7 +1404,7 @@
           "Webhooks"
         ],
         "summary": "Register a webhook endpoint",
-        "description": "The signing secret is returned exactly once, here. Store it \u2014 nothing can recover it.\n\nRequires the `webhooks.write` scope.",
+        "description": "The signing secret is returned exactly once, here. Store it \u2014 nothing can recover it.\n\nRequires the `webhooks.write` scope.\n\nA subject-bound key cannot manage webhook endpoints. One endpoint receives the transitions of every checkout the tenant runs, for every end user, so registering or reading them from a single person's key would be a way to subscribe to everyone else's activity. `403`.",
         "operationId": "createWebhookEndpoint",
         "requestBody": {
           "required": true,
@@ -1421,7 +1501,7 @@
           "Webhooks"
         ],
         "summary": "List webhook endpoints",
-        "description": "Active endpoints only \u2014 revoked ones are excluded. Not paginated. Never returns a secret.\n\nRequires the `webhooks.read` scope.",
+        "description": "Active endpoints only \u2014 revoked ones are excluded. Not paginated. Never returns a secret.\n\nRequires the `webhooks.read` scope.\n\nA subject-bound key cannot manage webhook endpoints. One endpoint receives the transitions of every checkout the tenant runs, for every end user, so registering or reading them from a single person's key would be a way to subscribe to everyone else's activity. `403`.",
         "operationId": "listWebhookEndpoints",
         "responses": {
           "200": {
@@ -1471,7 +1551,7 @@
           "Webhooks"
         ],
         "summary": "Revoke a webhook endpoint",
-        "description": "Revocation is a timestamp, not a row delete. Deliveries stop immediately and the endpoint drops out of the list.\n\nRequires the `webhooks.write` scope.",
+        "description": "Revocation is a timestamp, not a row delete. Deliveries stop immediately and the endpoint drops out of the list.\n\nRequires the `webhooks.write` scope.\n\nA subject-bound key cannot manage webhook endpoints. `403`.",
         "operationId": "revokeWebhookEndpoint",
         "responses": {
           "200": {
@@ -1556,6 +1636,14 @@
                       "$ref": "#/components/schemas/Scope"
                     },
                     "description": "Omit for full access (`[\"*\"]`)."
+                  },
+                  "subject": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Bind the key to one of your end users \u2014 your own opaque id, max 200 characters. **Omit for a tenant-wide key**, which is what every key issued before this existed already is.\n\nA bound key sees and creates only that subject's checkouts and buyer profiles, and is refused outright on the account-wide endpoints (`GET`/`DELETE /v1/api-keys`, `/v1/usage`, `/v1/webhooks`).\n\nMinting from a bound key **inherits** the binding: omitting `subject` gives another key for the same end user, not a tenant-wide one, and naming a different subject is a `403`. Fixed at creation \u2014 there is no rebinding and no unbinding.",
+                    "examples": [
+                      "user_a91f"
+                    ]
                   }
                 }
               },
@@ -1575,6 +1663,18 @@
                     "scopes": [
                       "checkouts.write"
                     ]
+                  }
+                },
+                "boundToOneEndUser": {
+                  "summary": "A key that can only ever act for one end user",
+                  "value": {
+                    "mode": "live",
+                    "label": "agent for user_a91f",
+                    "scopes": [
+                      "checkouts.write",
+                      "buyer-profiles.read"
+                    ],
+                    "subject": "user_a91f"
                   }
                 }
               }
@@ -1634,7 +1734,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Sandbox-only account asking for a live key, or an attempt to escalate.",
+            "description": "A sandbox-only account asking for a live key, a test key asking for a live key, or an attempt to escalate scopes or subject. Authority passes down, never sideways.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1666,6 +1766,20 @@
                         "checkouts.write"
                       ]
                     }
+                  },
+                  "modeEscalation": {
+                    "summary": "A test key trying to mint a live key",
+                    "value": {
+                      "error": true,
+                      "message": "A test key cannot issue a live key. Use a live key, or activate the account."
+                    }
+                  },
+                  "subjectEscalation": {
+                    "summary": "A subject-bound key trying to issue a key for someone else",
+                    "value": {
+                      "error": true,
+                      "message": "This API key is bound to subject 'user_a91f' and cannot issue keys for another."
+                    }
                   }
                 }
               }
@@ -1678,7 +1792,7 @@
           "API keys"
         ],
         "summary": "List API keys",
-        "description": "Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set \u2014 filter client-side if you only want active ones.\n\nListing never returns a secret. `keyPrefix` is the most a list can show.\n\nRequires the `api-keys.read` scope.",
+        "description": "Not paginated, newest first. **Revoked keys are included**, with `revokedAt` set \u2014 filter client-side if you only want active ones.\n\nListing never returns a secret. `keyPrefix` is the most a list can show.\n\nRequires the `api-keys.read` scope.\n\nA subject-bound key cannot call this: the key list is a tenant-wide fact, and a credential acting for one end user must not be able to enumerate its siblings. `403`.",
         "operationId": "listApiKeys",
         "responses": {
           "200": {
@@ -1703,11 +1817,12 @@
                   "keys": [
                     {
                       "id": "2a44c7f0-1b23-4a95-9d0e-77e1b6c4a812",
-                      "label": "shopping-agent",
+                      "label": "agent for user_a91f",
                       "mode": "live",
                       "scopes": [
                         "checkouts.write"
                       ],
+                      "subject": "user_a91f",
                       "keyPrefix": "ck_live_9Hf2QzT",
                       "lastUsedAt": "2026-07-29T09:14:31.190Z",
                       "revokedAt": null,
@@ -1720,6 +1835,7 @@
                       "scopes": [
                         "*"
                       ],
+                      "subject": null,
                       "keyPrefix": "ck_test_3sQd7yQ",
                       "lastUsedAt": null,
                       "revokedAt": "2026-07-27T11:44:09.331Z",
@@ -1756,7 +1872,7 @@
           "API keys"
         ],
         "summary": "Revoke an API key",
-        "description": "Takes effect immediately. Revocation is a timestamp, not a row delete \u2014 knowing which key was live when matters more than a tidy table if one is ever abused.\n\nNothing stops a key revoking itself. Revoke the old key only after the new one's traffic has taken over.\n\nRequires the `api-keys.write` scope.",
+        "description": "Takes effect immediately. Revocation is a timestamp, not a row delete \u2014 knowing which key was live when matters more than a tidy table if one is ever abused.\n\nNothing stops a key revoking itself. Revoke the old key only after the new one's traffic has taken over.\n\nRequires the `api-keys.write` scope.\n\nA subject-bound key cannot call this. Revocation is a tenant-wide power \u2014 left open, one end user's key could take the account's own key offline. `403`.",
         "operationId": "revokeApiKey",
         "responses": {
           "200": {
@@ -1810,7 +1926,7 @@
           "Usage"
         ],
         "summary": "Billable usage",
-        "description": "Completed checkouts only. Attempts are never metered \u2014 charging for attempts would mean earning more when the agent fails, which is backwards for a product whose entire problem is reliability.\n\nThe default window is the current calendar month (UTC), which is the unit tenants are billed in.\n\nRequires the `usage.read` scope.",
+        "description": "Completed checkouts only. Attempts are never metered \u2014 charging for attempts would mean earning more when the agent fails, which is backwards for a product whose entire problem is reliability.\n\nThe default window is the current calendar month (UTC), which is the unit tenants are billed in.\n\nRequires the `usage.read` scope.\n\nA subject-bound key cannot call this. Billing is between us and the tenant; an end user's key reading the account's total spend and order volume would be a leak between your own customers. `403`.",
         "operationId": "getUsage",
         "parameters": [
           {
@@ -1944,6 +2060,16 @@
           "type": "string",
           "format": "date-time"
         }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Makes a create safe to retry. A second request with the same key returns the **original** checkout with `200` instead of starting a second run; the same key with a different body is a `409`.\n\nStrongly recommended on every create. A `POST` that times out after the server accepted it is indistinguishable, from the caller's side, from one that never landed, and every autonomous caller retries a timeout by default \u2014 so without this header the worst failure mode of the product is reachable by an ordinary network blip.\n\nThe request body is hashed with its object keys sorted and its defaults applied, so key order does not matter and `\"constraints\": {}` matches an omitted `constraints`. Keys are namespaced per (tenant, `subject`) and never expire. An empty or whitespace-only value is treated as absent.\n\nRead by `POST /v1/checkouts` only; every other endpoint ignores it.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "acme-4412"
       }
     },
     "responses": {
@@ -1972,7 +2098,7 @@
         }
       },
       "Forbidden": {
-        "description": "The key is missing the scope this route requires, or the tenant is suspended.",
+        "description": "The key is missing the scope this route requires, the tenant is suspended, or the key is bound to one end user and this route answers an account-wide question.",
         "content": {
           "application/json": {
             "schema": {
@@ -1997,6 +2123,13 @@
                 "value": {
                   "error": true,
                   "message": "Tenant suspended"
+                }
+              },
+              "subjectBound": {
+                "summary": "A subject-bound key reaching for a tenant-wide fact",
+                "value": {
+                  "error": true,
+                  "message": "A subject-bound key cannot read account usage."
                 }
               }
             }
@@ -2196,6 +2329,28 @@
               "type": "string"
             },
             "description": "The hosts this key *can* reach."
+          }
+        }
+      },
+      "IdempotencyConflict": {
+        "type": "object",
+        "title": "IdempotencyConflict",
+        "description": "`POST /v1/checkouts` only. `checkoutId` names the checkout the key already refers to, so you can inspect it and decide whether the retry was the mistake or the key was.",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "checkoutId": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -2458,6 +2613,13 @@
           "status": {
             "$ref": "#/components/schemas/CheckoutStatus"
           },
+          "subject": {
+            "type": "string",
+            "description": "Your own id for the end user this purchase is for. **Absent** when the checkout is not tagged to one. Set explicitly at creation, or stamped from the authenticating key's binding.",
+            "examples": [
+              "user_a91f"
+            ]
+          },
           "target": {
             "$ref": "#/components/schemas/CheckoutTarget"
           },
@@ -2621,6 +2783,14 @@
             "format": "uuid",
             "description": "Must belong to your tenant, or the request is a `400`. Without one the agent has no address, and on most merchants that is where the run stops \u2014 or it raises a `shipping` action."
           },
+          "subject": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Your own opaque id for one of your end users. Max 200 characters; never parsed, never validated against anything, and never sent to a merchant.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\nIt also namespaces the `Idempotency-Key`: two end users may pick the same key string without colliding.",
+            "examples": [
+              "user_a91f"
+            ]
+          },
           "constraints": {
             "allOf": [
               {
@@ -2675,70 +2845,135 @@
           }
         }
       },
-      "BuyerProfileInput": {
+      "BuyerName": {
         "type": "object",
-        "title": "BuyerProfileInput",
-        "description": "Used for both create and update. On `PATCH`, each supplied sub-object replaces the stored one wholesale.",
+        "additionalProperties": false,
+        "properties": {
+          "first": {
+            "type": "string"
+          },
+          "last": {
+            "type": "string"
+          }
+        },
+        "description": "Also used as the cardholder name at the payment step, which is why the card action never asks for one.",
+        "title": "BuyerName"
+      },
+      "BuyerContact": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Where the merchant's order confirmation goes. Most checkouts refuse to proceed without it."
+          },
+          "phone": {
+            "type": "string",
+            "description": "Required by a fair number of merchants, particularly delivery."
+          }
+        },
+        "title": "BuyerContact"
+      },
+      "BuyerShipping": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "addressLines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only the **first** line is filled on the Shopify tier. Put an apartment number on line one if it matters."
+          },
+          "locality": {
+            "type": "string",
+            "description": "City / town."
+          },
+          "administrativeAreaCode": {
+            "type": "string",
+            "description": "State / province. Send the short code (`KY`, `ON`). Effectively required for US and CA addresses \u2014 Shopify offers no shipping method without it, and with no shipping method the order can never be placed."
+          },
+          "postalCode": {
+            "type": "string"
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2. Filled before the state, since changing country repopulates the province list."
+          }
+        },
+        "title": "BuyerShipping"
+      },
+      "BuyerProfileCreate": {
+        "type": "object",
+        "title": "BuyerProfileCreate",
+        "description": "Every field is optional \u2014 `{}` is a valid profile \u2014 but the agent can only fill what you gave it. Unknown keys are ignored here (unlike `PATCH`, which rejects them).",
         "additionalProperties": false,
         "properties": {
           "label": {
             "type": "string",
             "description": "Yours, for bookkeeping. Never sent to a merchant."
           },
+          "subject": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Your own opaque id for one of your end users. Max 200 characters; never parsed, never validated against anything, and never sent to a merchant.\n\nOn a key bound to a subject this is filled in for you: omit it and the row is stamped with the key's subject, name a different one and the request is a `403`. On a tenant-wide key it is how a row gets tagged in the first place.\n\n**Create-only.** A profile cannot be reassigned to another end user afterwards: `PATCH` with `subject` is a `400`.",
+            "examples": [
+              "user_a91f"
+            ]
+          },
           "name": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "first": {
-                "type": "string"
-              },
-              "last": {
-                "type": "string"
-              }
-            },
-            "description": "Also used as the cardholder name at the payment step, which is why the card action never asks for one."
+            "$ref": "#/components/schemas/BuyerName"
           },
           "contact": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "email": {
-                "type": "string",
-                "description": "Where the merchant's order confirmation goes. Most checkouts refuse to proceed without it."
-              },
-              "phone": {
-                "type": "string",
-                "description": "Required by a fair number of merchants, particularly delivery."
-              }
-            }
+            "$ref": "#/components/schemas/BuyerContact"
           },
           "shipping": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "addressLines": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Only the **first** line is filled on the Shopify tier. Put an apartment number on line one if it matters."
+            "$ref": "#/components/schemas/BuyerShipping"
+          }
+        }
+      },
+      "BuyerProfilePatch": {
+        "type": "object",
+        "title": "BuyerProfilePatch",
+        "description": "Partial at the top level only: omit a key and that document is untouched, supply one and it is **replaced wholesale**. There is no deep merge. `null` clears a document outright.\n\nStrict: any key outside these four \u2014 `subject` in particular \u2014 is a `400` rather than a silently dropped field, because a caller trying to move a profile to another end user should be told it did not happen.",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Yours, for bookkeeping. Never sent to a merchant. `null` clears it."
+          },
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuyerName"
               },
-              "locality": {
-                "type": "string",
-                "description": "City / town."
-              },
-              "administrativeAreaCode": {
-                "type": "string",
-                "description": "State / province. Send the short code (`KY`, `ON`). Effectively required for US and CA addresses \u2014 Shopify offers no shipping method without it, and with no shipping method the order can never be placed."
-              },
-              "postalCode": {
-                "type": "string"
-              },
-              "countryCode": {
-                "type": "string",
-                "description": "ISO 3166-1 alpha-2. Filled before the state, since changing country repopulates the province list."
+              {
+                "type": "null"
               }
-            }
+            ]
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuyerContact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shipping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuyerShipping"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -2748,6 +2983,7 @@
         "required": [
           "id",
           "label",
+          "subject",
           "name",
           "contact",
           "shipping",
@@ -2762,6 +2998,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Your own id for the end user this profile belongs to, or `null` when it is not tagged to one. Always present \u2014 unlike a checkout, which omits the field entirely. Fixed at creation.",
+            "examples": [
+              "user_a91f"
             ]
           },
           "name": {
@@ -2890,6 +3136,7 @@
           "label",
           "mode",
           "scopes",
+          "subject",
           "keyPrefix",
           "lastUsedAt",
           "revokedAt",
@@ -2919,6 +3166,16 @@
               "$ref": "#/components/schemas/Scope"
             },
             "description": "`[\"*\"]` for a full-access key, including every key issued before scopes existed."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The end user this key acts for, or `null` for a tenant-wide key. Always present here, unlike on the creation response. This listing is the only place to audit which of your keys act for whom \u2014 and a subject-bound key cannot read it.",
+            "examples": [
+              "user_a91f"
+            ]
           },
           "keyPrefix": {
             "type": [
@@ -2975,6 +3232,13 @@
             "items": {
               "$ref": "#/components/schemas/Scope"
             }
+          },
+          "subject": {
+            "type": "string",
+            "description": "The end user this key acts for. **Present only when the key is bound** \u2014 a tenant-wide key's creation response has no `subject` field at all.",
+            "examples": [
+              "user_a91f"
+            ]
           },
           "keyPrefix": {
             "type": "string",

@@ -14,7 +14,8 @@
       "Checkoutvia's primary integrator is an autonomous agent or the developer wiring one up. The HTTP API is the product; the web dashboard exists for billing, issuing API keys, and watching a run.",
       "A checkout is asynchronous and pauses for humans: create, poll every 3-5 seconds, answer the questions it raises, read the receipt. A run takes 2-3 minutes and can park for up to 10 minutes on one question. Never present it as a synchronous request/response call.",
       "Branch on pendingUserAction.key. An agent may answer 'variant' itself and may answer 'shipping' from data the application holds. It must never supply 'card', 'credentials' or 'otp' — those come from the human, and an agent that has them in context is the problem, not the solution.",
-      "Base URL is https://api.checkoutvia.com and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job.",
+      "Base URL is https://api.checkoutvia.com and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job. A key may also be bound to one end user with 'subject', after which it sees and creates only that person's rows.",
+      "POST /v1/checkouts takes an Idempotency-Key header. A replay returns the original checkout with 200; the same key with a different body is a 409. Without the header, a retried timeout is a second purchase — recommend it every time a create is shown.",
       "Every example in these docs is a shape the API actually produces. Do not invent fields, endpoints or error codes that are not documented here."
     ]
   },
@@ -45,7 +46,8 @@
             "group": "Buyers",
             "pages": [
               "buyer-profiles",
-              "buyer-sessions"
+              "buyer-sessions",
+              "end-user-isolation"
             ]
           },
           {

@@ -36,8 +36,10 @@ Consequences, stated plainly:
 - The plaintext is returned exactly once, in the `key` field of the `POST /v1/api-keys`
   response (or `apiKey` from `POST /v1/signup`). Nothing can recover it afterwards.
 - Losing a key is not a support ticket. Create a new one and revoke the old one.
-- Keys are tenant-scoped, never user-scoped. What a key may *do* within that tenant is
-  narrowed by [scopes](#scopes); who it acts as is not.
+- A key is scoped to one tenant. What it may *do* within that tenant is narrowed by
+  [scopes](#scopes); *whose data* it may do it to is narrowed by
+  [`subject`](#binding-a-key-to-one-end-user). Both are optional and both are fixed at
+  creation.
 
 ## Scopes
 
@@ -129,6 +131,27 @@ server, and cannot mint itself a better key. Narrow further by dropping
 to a checkout does not require the scope to read it, so an agent holding only
 `["checkouts.write"]` can still ship to an address it can never enumerate.
 
+## Binding a key to one end user
+
+Scopes narrow what a key may do. `subject` narrows whose data it may do it to — the second axis,
+and the one that matters if you run one agent on behalf of many people.
+
+```bash
+curl -sX POST https://api.checkoutvia.com/v1/api-keys \
+  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write"],"subject":"user_a91f"}'
+```
+
+A `subject` is your own opaque id for one of your end users; we never generate one. A key
+carrying one sees and creates only that person's checkouts and buyer profiles, cannot list or
+revoke account keys, cannot read `/v1/usage`, cannot manage webhooks, and cannot mint a key for
+anybody else. A key without one is tenant-wide — which is what every key issued before this
+existed already is, so the mechanism is inert until you use it.
+
+Full contract, including what it deliberately does not cover:
+[End-user isolation](/end-user-isolation).
+
 ## Managing keys
 
 <CodeGroup>
@@ -168,6 +191,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
       "label": "ci",
       "mode": "test",
       "scopes": ["checkouts.write"],
+      "subject": null,
       "keyPrefix": "ck_test_3sQd7yQ",
       "lastUsedAt": "2026-07-29T09:14:31.190Z",
       "revokedAt": null,
@@ -178,7 +202,8 @@ curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
 ```
 
 Listing never returns a secret — the `key` field exists only on the creation response. It does
-return `scopes`, which is how you audit what each outstanding key can reach.
+return `scopes` and `subject`, which is how you audit what each outstanding key can reach and
+whose data it can reach it on. `subject: null` is a tenant-wide key.
 
 ### Rotation
 
@@ -254,8 +279,9 @@ cannot be pointed anywhere else even by accident.
 </Tip>
 
 <Note>
-Mode and scopes are both fixed at creation. There is no way to promote a `test` key to `live`,
-and no way to re-scope a key — create a new one and revoke the old one.
+Mode, scopes and `subject` are all fixed at creation. There is no way to promote a `test` key to
+`live`, no way to re-scope a key, and no way to rebind or unbind one — create a new one and
+revoke the old one.
 </Note>
 
 ## Auth failures
@@ -266,6 +292,7 @@ and no way to re-scope a key — create a new one and revoke the old one.
 | `401` | `Invalid or revoked API key` | The token's hash matches no active key row. |
 | `403` | `Tenant suspended` | The key is valid but the tenant has `suspended_at` set. Contact us. |
 | `403` | `This API key is missing the '<scope>' scope.` | The key authenticated but is not scoped for this route. Carries `requiredScope`. |
+| `403` | `A subject-bound key cannot …` | The key is [bound to one end user](/end-user-isolation) and asked for an account-wide fact: the key list, usage, or webhooks. |
 | `404` | `Unknown resource` | A path under `/v1` that is not one of the six scoped resources. |
 
 They all come back as `{ "error": true, "message": "..." }`. There is no distinction in the
