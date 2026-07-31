@@ -14,8 +14,8 @@ POST /v1/buyer-profiles
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "ada-home",
@@ -136,8 +136,8 @@ GET /v1/buyer-profiles/{id}
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Same object as create. `404 Profile not found` if it does not exist, is not yours, or belongs to
@@ -154,8 +154,8 @@ GET /v1/buyer-profiles
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 <ParamField query="limit" type="integer" default="20">
@@ -200,8 +200,8 @@ PATCH /v1/buyer-profiles/{id}
 Success: `200`, returning the full updated profile.
 
 ```bash
-curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX PATCH https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "shipping": {
@@ -278,8 +278,8 @@ DELETE /v1/buyer-profiles/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json

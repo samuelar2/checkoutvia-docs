@@ -298,8 +298,8 @@ transaction record and treat `merchantOrderId` as the join key.
 ## Cancelling
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Returns `202` with an empty body. Cancellation is asynchronous: it stops the run even while

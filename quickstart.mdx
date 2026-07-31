@@ -11,14 +11,14 @@ control — a genuinely placed order, a real variant prompt, real card entry —
 to a real merchant. See [Sandbox](/sandbox) for what changes when you go live.
 
 <Note>
-The API base URL is `https://api.checkoutvia.com`. Every authenticated call takes
+The API base URL is `https://api.farthing.ai`. Every authenticated call takes
 `Authorization: Bearer <your key>`.
 </Note>
 
 ## 1. Sign up
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/signup \
+curl -sX POST https://api.farthing.ai/v1/signup \
   -H 'content-type: application/json' \
   -d '{"name":"Acme Agents","email":"you@example.com"}'
 ```
@@ -40,7 +40,7 @@ support process, and no database query that can recover it. Lost key means
 </Warning>
 
 ```bash
-export CKV_KEY=ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb
+export FARTHING_KEY=ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb
 ```
 
 ## 2. Store a buyer profile
@@ -49,8 +49,8 @@ The agent needs somewhere to ship. A buyer profile is reusable identity and ship
 you pass its id when creating a checkout.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "default",
@@ -93,8 +93,8 @@ the order can never be placed.
 ## 3. Create the checkout
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -H "idempotency-key: $(uuidgen)" \
   -d '{
@@ -135,7 +135,7 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 ```
 
 ```bash
-export CKV_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
+export FARTHING_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
 ```
 
 <Tip>
@@ -149,8 +149,8 @@ from the *purchase* — a cart id, an order row — so that a retry of that purc
 ## 4. Poll
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Within a few seconds the browser is up and the agent is on the product page. When it needs
@@ -229,8 +229,8 @@ Read `responseSchema.properties`, build an object with the same keys, and submit
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60 \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60 \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{ "action": "submit", "values": { "Size": "M", "Color": "Black" } }'
 ```
@@ -269,8 +269,8 @@ whichever engine drove the checkout:
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4 \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4 \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "action": "submit",
@@ -329,8 +329,8 @@ No SDK yet — this is plain `fetch` and it is the whole client. Node 20+ or any
 runtime.
 
 ```ts checkout.ts
-const BASE = "https://api.checkoutvia.com";
-const KEY = process.env.CKV_KEY!;
+const BASE = "https://api.farthing.ai";
+const KEY = process.env.FARTHING_KEY!;
 
 type Json = Record<string, any>;
 
@@ -438,7 +438,7 @@ async function main() {
         body: JSON.stringify({
           action: "submit",
           values: {
-            card_number: process.env.CKV_DEMO_CARD!,
+            card_number: process.env.FARTHING_DEMO_CARD!,
             card_expiry: "12 / 30",
             card_cvc: "123",
           },

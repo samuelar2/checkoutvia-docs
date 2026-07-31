@@ -13,14 +13,14 @@ into a self-contained page you can drop in an `<iframe>`.
 ## Mint a token
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX POST https://api.farthing.ai/v1/checkouts/$FARTHING_ID/embed-token \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
 {
   "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
-  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "url": "https://api.farthing.ai/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
   "expiresAt": "2026-07-29T09:24:45.000Z"
 }
 ```
@@ -29,7 +29,7 @@ Then embed `url` directly:
 
 ```html
 <iframe
-  src="https://api.checkoutvia.com/embed/1f2e3d4c-...?token=eyJhbGciOiJIUzI1NiJ9..."
+  src="https://api.farthing.ai/embed/1f2e3d4c-...?token=eyJhbGciOiJIUzI1NiJ9..."
   style="width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 8px"
   title="Live checkout"
 ></iframe>

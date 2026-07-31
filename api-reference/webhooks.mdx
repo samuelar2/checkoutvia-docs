@@ -15,10 +15,10 @@ POST /v1/webhooks
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
-  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+  -d '{"url":"https://hooks.example.com/farthing","label":"prod"}'
 ```
 
 <ParamField body="url" type="string" required>
@@ -32,7 +32,7 @@ curl -sX POST https://api.checkoutvia.com/v1/webhooks \
 ```json Response (201)
 {
   "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-  "url": "https://hooks.example.com/checkoutvia",
+  "url": "https://hooks.example.com/farthing",
   "label": "prod",
   "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
 }
@@ -60,8 +60,8 @@ GET /v1/webhooks
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -69,7 +69,7 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
   "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-      "url": "https://hooks.example.com/checkoutvia",
+      "url": "https://hooks.example.com/farthing",
       "label": "prod",
       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
       "lastDeliveryStatus": 200,
@@ -109,8 +109,8 @@ DELETE /v1/webhooks/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json

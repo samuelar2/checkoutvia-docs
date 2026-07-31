@@ -1,18 +1,18 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Checkoutvia API",
+    "title": "Farthing API",
     "version": "1.0.0",
     "summary": "Agentic checkout. Give it a product URL and a plain-English request; it drives a real browser to a completed purchase and asks a human only when it must.",
     "description": "The HTTP API is the product. Everything an integration needs \u2014 creating checkouts, answering the questions a run stops on, storing buyers, issuing scoped keys \u2014 is here.\n\nA checkout is asynchronous and pauses for humans. `POST /v1/checkouts` returns in milliseconds with a `queued` object; the run itself takes minutes and may park on a `pendingUserAction` for up to ten. Poll `GET /v1/checkouts/{id}` (unmetered) or register a webhook endpoint.\n\nNot covered by this spec: the live-view embed (`GET /embed/{checkoutId}` and `GET /embed/{checkoutId}/stream`). Those are consumed by a browser, authenticate with a short-lived JWT minted at `POST /v1/checkouts/{id}/embed-token` rather than with an API key, and return HTML and `text/event-stream`.",
     "contact": {
-      "name": "Checkoutvia",
-      "url": "https://docs.checkoutvia.com"
+      "name": "Farthing",
+      "url": "https://docs.farthing.ai"
     }
   },
   "servers": [
     {
-      "url": "https://api.checkoutvia.com",
+      "url": "https://api.farthing.ai",
       "description": "Production"
     }
   ],
@@ -79,13 +79,13 @@
                     },
                     "service": {
                       "type": "string",
-                      "const": "checkoutvia"
+                      "const": "farthing"
                     }
                   }
                 },
                 "example": {
                   "ok": true,
-                  "service": "checkoutvia"
+                  "service": "farthing"
                 }
               }
             }
@@ -99,7 +99,7 @@
           "Signup"
         ],
         "summary": "Create a sandbox account",
-        "description": "Creates a sandbox-only tenant and returns one `ck_test_` key, shown exactly once.\n\nA sandbox tenant runs the entire product \u2014 real browser, real storefront, real card entry, a genuinely placed order \u2014 but only against merchants Checkoutvia controls. It cannot reach a real merchant and cannot mint a `live` key until the account is activated.\n\nUnauthenticated, and rate limited on its own terms: 3 signups per hour per source IP, 200 per 24 hours platform-wide.",
+        "description": "Creates a sandbox-only tenant and returns one `ck_test_` key, shown exactly once.\n\nA sandbox tenant runs the entire product \u2014 real browser, real storefront, real card entry, a genuinely placed order \u2014 but only against merchants Farthing controls. It cannot reach a real merchant and cannot mint a `live` key until the account is activated.\n\nUnauthenticated, and rate limited on its own terms: 3 signups per hour per source IP, 200 per 24 hours platform-wide.",
         "operationId": "signup",
         "security": [],
         "requestBody": {
@@ -1516,7 +1516,7 @@
                 }
               },
               "example": {
-                "url": "https://example.com/hooks/checkoutvia",
+                "url": "https://example.com/hooks/farthing",
                 "label": "prod"
               }
             }
@@ -1558,7 +1558,7 @@
                 },
                 "example": {
                   "id": "3d4c5b6a-7890-4123-9abc-def012345678",
-                  "url": "https://example.com/hooks/checkoutvia",
+                  "url": "https://example.com/hooks/farthing",
                   "label": "prod",
                   "secret": "whsec_1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuV"
                 }
@@ -1630,7 +1630,7 @@
                   "data": [
                     {
                       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-                      "url": "https://hooks.example.com/checkoutvia",
+                      "url": "https://hooks.example.com/farthing",
                       "label": "prod",
                       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
                       "lastDeliveryStatus": 200,
@@ -1640,7 +1640,7 @@
                   "endpoints": [
                     {
                       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-                      "url": "https://hooks.example.com/checkoutvia",
+                      "url": "https://hooks.example.com/farthing",
                       "label": "prod",
                       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
                       "lastDeliveryStatus": 200,

@@ -6,7 +6,7 @@ description: "Bearer API keys, the scopes they carry, how they are stored, how t
 Every call to `/v1/*` except `POST /v1/signup` requires a bearer token:
 
 ```bash
-curl https://api.checkoutvia.com/v1/checkouts \
+curl https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
 ```
 
@@ -119,8 +119,8 @@ against it*.
 
 ```bash
 # An agent that runs checkouts and picks from stored addresses. Nothing else.
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write","buyer-profiles.read"]}'
 ```
@@ -137,8 +137,8 @@ Scopes narrow what a key may do. `subject` narrows whose data it may do it to �
 and the one that matters if you run one agent on behalf of many people.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write"],"subject":"user_a91f"}'
 ```
@@ -159,20 +159,20 @@ Full contract, including what it deliberately does not cover:
 
 <CodeGroup>
 ```bash Create
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"test","label":"ci","scopes":["checkouts.write"]}'
 ```
 
 ```bash List
-curl -s https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash Revoke
-curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/api-keys/$KEY_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 </CodeGroup>
 
@@ -250,12 +250,12 @@ on its own.
 
 ```bash
 # Same account, same body. Different key, different outcome.
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_…" -H 'content-type: application/json' \
   -d '{"target":{"url":"https://example-store.com/products/widget"}}'
 # → 403  Cannot check out at example-store.com: This request used a test key. …
 
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_live_…" -H 'content-type: application/json' \
   -d '{"target":{"url":"https://example-store.com/products/widget"}}'
 # → 201

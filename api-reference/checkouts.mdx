@@ -12,8 +12,8 @@ POST /v1/checkouts
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -H "idempotency-key: acme-4412" \
   -d '{
@@ -240,8 +240,8 @@ GET /v1/checkouts/{id}
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 This is the object you poll, and it is the same shape returned by create and by submitting an
@@ -362,12 +362,12 @@ GET /v1/checkouts
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?status=awaiting_user_action&limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 
 # One end user's runs, from a tenant-wide key.
-curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ### Query
@@ -469,8 +469,8 @@ DELETE /v1/checkouts/{id}
 Success: `202`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Returns `202` with an **empty body**.
@@ -500,14 +500,14 @@ POST /v1/checkouts/{id}/embed-token
 Success: `200`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX POST https://api.farthing.ai/v1/checkouts/$FARTHING_ID/embed-token \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
 {
   "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
-  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "url": "https://api.farthing.ai/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
   "expiresAt": "2026-07-29T09:24:45.000Z"
 }
 ```

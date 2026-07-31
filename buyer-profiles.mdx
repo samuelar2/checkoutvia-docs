@@ -13,8 +13,8 @@ most merchants that is where the run stops.
 ## Create
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "ada-home",
@@ -107,13 +107,13 @@ postal code does not match the city, you find out when the merchant rejects it.
 
 <CodeGroup>
 ```bash Get one
-curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash List
-curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 </CodeGroup>
 
@@ -140,8 +140,8 @@ page; `nextCursor: null` means you have them all. `limit` defaults to 20 and cap
 ## Update
 
 ```bash
-curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX PATCH https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "shipping": {
@@ -200,8 +200,8 @@ resolving the reference later.
 ## Delete
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)

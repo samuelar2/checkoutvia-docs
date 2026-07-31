@@ -6,7 +6,7 @@ description: "Base URL, conventions, and every endpoint on one page."
 ## Base URL
 
 ```
-https://api.checkoutvia.com
+https://api.farthing.ai
 ```
 
 Everything tenant-scoped lives under `/v1` and requires `Authorization: Bearer <key>`. Two
@@ -104,7 +104,7 @@ a minted JWT rather than an API key, and returns HTML and `text/event-stream`. S
 
 | Method | Path | Auth |
 | --- | --- | --- |
-| `GET` | `/health` | none — returns `{ "ok": true, "service": "checkoutvia" }` |
+| `GET` | `/health` | none — returns `{ "ok": true, "service": "farthing" }` |
 
 ### [Signup](/api-reference/signup)
 
@@ -179,5 +179,5 @@ Documented in [Live view](/live-view).
 <Note>
 There is no SDK yet. Everything here is plain HTTP; the [Quickstart](/quickstart) has a
 complete TypeScript client in about a hundred lines of `fetch`, and
-[Use Checkoutvia from an LLM agent](/agents) has the same thing shaped as model tools.
+[Use Farthing from an LLM agent](/agents) has the same thing shaped as model tools.
 </Note>

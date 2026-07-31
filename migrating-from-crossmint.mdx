@@ -3,7 +3,7 @@ title: "Migrating from Crossmint Agent Checkouts"
 description: "The contract was mirrored on purpose. What ports over unchanged, what differs, and what you get on top."
 ---
 
-Checkoutvia is a from-scratch implementation of the same product category as Crossmint Agent
+Farthing is a from-scratch implementation of the same product category as Crossmint Agent
 Checkouts, built from a full teardown of that product. The data model and the request/response
 shapes were mirrored deliberately, so that a client written against that quickstart is a
 port, not a rewrite.
@@ -52,7 +52,7 @@ Stated plainly, so you find these at build time rather than in production.
 
 <AccordionGroup>
   <Accordion title="Authentication and base URL">
-    `https://api.checkoutvia.com`, and `Authorization: Bearer ck_test_…` / `ck_live_…`.
+    `https://api.farthing.ai`, and `Authorization: Bearer ck_test_…` / `ck_live_…`.
 
     Keys are created and revoked through the API itself (`/v1/api-keys`), stored only as a
     hash, and shown once. See [Authentication](/authentication).
@@ -203,7 +203,7 @@ Four smaller ones worth knowing about:
 
 <Steps>
   <Step title="Swap base URL and auth">
-    `https://api.checkoutvia.com`, `Authorization: Bearer ck_…`. Sign up with
+    `https://api.farthing.ai`, `Authorization: Bearer ck_…`. Sign up with
     `POST /v1/signup` for a sandbox key in one call.
   </Step>
   <Step title="Rename intent → checkout at your call sites">

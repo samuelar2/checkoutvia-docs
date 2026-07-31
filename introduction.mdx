@@ -1,9 +1,9 @@
 ---
 title: "Introduction"
-description: "Checkoutvia is an HTTP API for agents that buy things. What it does, what it refuses to do, and the shape of the integration."
+description: "Farthing is an HTTP API for agents that buy things. What it does, what it refuses to do, and the shape of the integration."
 ---
 
-Checkoutvia buys things on the open web on a user's behalf. The caller we build for is an
+Farthing buys things on the open web on a user's behalf. The caller we build for is an
 **autonomous agent** — or the developer wiring one up.
 
 You give it a URL and a sentence:
@@ -32,7 +32,7 @@ page they would.
 
 Stated outright, because it changes where you should be reading.
 
-Everything Checkoutvia does happens over HTTP. There is no required SDK, no widget to embed,
+Everything Farthing does happens over HTTP. There is no required SDK, no widget to embed,
 no client library you have to wait for. The **web dashboard exists for billing and for issuing
 API keys** — and, when you want it, for watching a run go past. It is not where the work
 happens, and no capability lives there that the API does not have.
@@ -41,7 +41,7 @@ That shape is deliberate. The integrator we design for is a process, not a perso
 through a console: it authenticates with a scoped bearer token, drives the whole lifecycle
 over four endpoints, and never needs a browser of its own.
 
-<Card title="Use Checkoutvia from an LLM agent" icon="robot" href="/agents">
+<Card title="Use Farthing from an LLM agent" icon="robot" href="/agents">
   Copy-paste tool definitions for Anthropic and OpenAI, the polling loop, and — the part that
   decides whether your integration is safe — which of the questions a checkout asks the model
   may answer itself.
@@ -118,7 +118,7 @@ These are deliberate refusals, not gaps.
 
 ## What this is not
 
-Checkoutvia is not a price comparison engine, a product search API, or a cart aggregator.
+Farthing is not a price comparison engine, a product search API, or a cart aggregator.
 It does not know what things cost until it loads the page. It takes a URL you already have
 and turns it into a completed order.
 

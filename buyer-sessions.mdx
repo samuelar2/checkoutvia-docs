@@ -81,8 +81,8 @@ checkout.
 ## Listing
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
@@ -116,8 +116,8 @@ login is actually doing anything.
 ## Revoking
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-sessions/$SESSION_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-sessions/$SESSION_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)

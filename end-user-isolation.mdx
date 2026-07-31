@@ -9,8 +9,8 @@ bound to it, and a bound key can only see and create rows for that one person.
 
 ```bash
 # A key that acts for exactly one of your users, and can never act for another.
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.write"],"subject":"user_a91f"}'
 ```
@@ -25,7 +25,7 @@ one sees the whole tenant, exactly as it always has.
 [Scopes](/authentication#scopes) narrow *what* a key may do. `subject` narrows *whose data* it
 may do it to. You need the second axis for the same reason you need the first, only more so.
 
-The holder of a Checkoutvia key is frequently an autonomous agent, and that agent spends its
+The holder of a Farthing key is frequently an autonomous agent, and that agent spends its
 run reading merchant pages — untrusted text, written by someone else, quoted back to the model
 in option names, form labels and progress messages. "List the buyer profiles" is a completely
 plausible call for a confused or prompt-injected agent to make. It is also a call that, on a
@@ -204,8 +204,8 @@ if you would rather keep one admin key than mint one per user:
 
 <CodeGroup>
 ```bash Checkout
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "target": { "url": "https://your-sandbox-store.myshopify.com/products/widget", "request": "buy this in medium" },
@@ -215,8 +215,8 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 ```
 
 ```bash Buyer profile
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "home",
@@ -288,8 +288,8 @@ matters.
 an admin key can answer "what is this person's agent doing" without fetching every checkout:
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
-  -H "authorization: Bearer $CKV_ADMIN_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY"
 ```
 
 The filter composes with `status`, `limit` and `cursor`, and takes the same shape as every other

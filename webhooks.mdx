@@ -14,16 +14,16 @@ webhook is a doorbell, not a delivery.
 ## Registering an endpoint
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
-  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+  -d '{"url":"https://hooks.example.com/farthing","label":"prod"}'
 ```
 
 ```json Response (201)
 {
   "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-  "url": "https://hooks.example.com/checkoutvia",
+  "url": "https://hooks.example.com/farthing",
   "label": "prod",
   "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
 }
@@ -42,13 +42,13 @@ per-endpoint, so a broken endpoint retries without re-delivering to the healthy 
 
 <CodeGroup>
 ```bash List
-curl -s https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash Revoke
-curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 </CodeGroup>
 
@@ -57,7 +57,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
   "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-      "url": "https://hooks.example.com/checkoutvia",
+      "url": "https://hooks.example.com/farthing",
       "label": "prod",
       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
       "lastDeliveryStatus": 200,
@@ -186,10 +186,10 @@ import express from "express";
 import { verifyWebhookSignature } from "./verify.js";
 
 const app = express();
-const SECRET = process.env.CKV_WEBHOOK_SECRET;
+const SECRET = process.env.FARTHING_WEBHOOK_SECRET;
 
 app.post(
-  "/checkoutvia",
+  "/farthing",
   express.raw({ type: "application/json" }),
   (req, res) => {
     const raw = req.body.toString("utf8");

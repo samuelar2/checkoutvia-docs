@@ -1,6 +1,6 @@
-# Checkoutvia docs
+# Farthing docs
 
-Public developer documentation for the Checkoutvia agentic-checkout API, built with
+Public developer documentation for the Farthing agentic-checkout API, built with
 [Mintlify](https://mintlify.com).
 
 Everything here is written against the implementation in the private `checkoutvia` repo.
@@ -78,5 +78,5 @@ Worth preserving, because it is the reason these docs are usable:
   card the user supplied" is a design decision with a reason; state the reason.
 - **No marketing filler.** No "seamless", no "powerful", no "simply".
 - **Never leak internals.** No account ids, ARNs, subnet or security-group ids, internal
-  hostnames, deployment URLs, or key material. Use `https://api.checkoutvia.com`,
+  hostnames, deployment URLs, or key material. Use `https://api.farthing.ai`,
   `https://example-store.com`, and `your-sandbox-store.myshopify.com`.

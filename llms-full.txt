@@ -1,15 +1,15 @@
-# Checkoutvia documentation
+# Farthing documentation
 
 > Agentic checkout API. Give it a product URL and a plain-English request; it drives a real browser to a completed purchase and asks a human only when it must.
 
-The complete Checkoutvia documentation as one file. Base URL is https://api.checkoutvia.com; every authenticated call takes `Authorization: Bearer ck_test_...` or `ck_live_...`.
+The complete Farthing documentation as one file. Base URL is https://api.farthing.ai; every authenticated call takes `Authorization: Bearer ck_test_...` or `ck_live_...`.
 
-A machine-readable OpenAPI 3.1 description of every /v1 endpoint lives at openapi.json in the docs repository (https://raw.githubusercontent.com/samuelar2/checkoutvia-docs/main/openapi.json); the reference pages generated from it are under https://docs.checkoutvia.com/api-spec/.
+A machine-readable OpenAPI 3.1 description of every /v1 endpoint lives at openapi.json in the docs repository (https://raw.githubusercontent.com/samuelar2/checkoutvia-docs/main/openapi.json); the reference pages generated from it are under https://docs.farthing.ai/api-spec/.
 
-- Checkoutvia's primary integrator is an autonomous agent or the developer wiring one up. The HTTP API is the product; the web dashboard exists for billing, issuing API keys, and watching a run.
+- Farthing's primary integrator is an autonomous agent or the developer wiring one up. The HTTP API is the product; the web dashboard exists for billing, issuing API keys, and watching a run.
 - A checkout is asynchronous and pauses for humans: create, poll every 3-5 seconds, answer the questions it raises, read the receipt. A run takes 2-3 minutes and can park for up to 10 minutes on one question. Never present it as a synchronous request/response call.
 - Branch on pendingUserAction.key. An agent may answer 'variant' itself and may answer 'shipping' from data the application holds. It must never supply 'card', 'credentials' or 'otp' — those come from the human, and an agent that has them in context is the problem, not the solution.
-- Base URL is https://api.checkoutvia.com and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job. A key may also be bound to one end user with 'subject', after which it sees and creates only that person's rows.
+- Base URL is https://api.farthing.ai and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job. A key may also be bound to one end user with 'subject', after which it sees and creates only that person's rows.
 - POST /v1/checkouts takes an Idempotency-Key header. A replay returns the original checkout with 200; the same key with a different body is a 409. Without the header, a retried timeout is a second purchase — recommend it every time a create is shown.
 - Every example in these docs is a shape the API actually produces. Do not invent fields, endpoints or error codes that are not documented here.
 
@@ -21,11 +21,11 @@ A machine-readable OpenAPI 3.1 description of every /v1 endpoint lives at openap
 
 ------------------------------------------------------------------------------
 # Introduction
-Source: https://docs.checkoutvia.com/introduction
-Summary: Checkoutvia is an HTTP API for agents that buy things. What it does, what it refuses to do, and the shape of the integration.
+Source: https://docs.farthing.ai/introduction
+Summary: Farthing is an HTTP API for agents that buy things. What it does, what it refuses to do, and the shape of the integration.
 ------------------------------------------------------------------------------
 
-Checkoutvia buys things on the open web on a user's behalf. The caller we build for is an
+Farthing buys things on the open web on a user's behalf. The caller we build for is an
 **autonomous agent** — or the developer wiring one up.
 
 You give it a URL and a sentence:
@@ -54,7 +54,7 @@ page they would.
 
 Stated outright, because it changes where you should be reading.
 
-Everything Checkoutvia does happens over HTTP. There is no required SDK, no widget to embed,
+Everything Farthing does happens over HTTP. There is no required SDK, no widget to embed,
 no client library you have to wait for. The **web dashboard exists for billing and for issuing
 API keys** — and, when you want it, for watching a run go past. It is not where the work
 happens, and no capability lives there that the API does not have.
@@ -63,7 +63,7 @@ That shape is deliberate. The integrator we design for is a process, not a perso
 through a console: it authenticates with a scoped bearer token, drives the whole lifecycle
 over four endpoints, and never needs a browser of its own.
 
-#### Use Checkoutvia from an LLM agent
+#### Use Farthing from an LLM agent
   Copy-paste tool definitions for Anthropic and OpenAI, the polling loop, and — the part that
   decides whether your integration is safe — which of the questions a checkout asks the model
   may answer itself.
@@ -139,7 +139,7 @@ These are deliberate refusals, not gaps.
 
 ## What this is not
 
-Checkoutvia is not a price comparison engine, a product search API, or a cart aggregator.
+Farthing is not a price comparison engine, a product search API, or a cart aggregator.
 It does not know what things cost until it loads the page. It takes a URL you already have
 and turns it into a completed order.
 
@@ -158,7 +158,7 @@ milliseconds, and build your UI around the `progressItems` stream rather than a 
 
 ------------------------------------------------------------------------------
 # Quickstart
-Source: https://docs.checkoutvia.com/quickstart
+Source: https://docs.farthing.ai/quickstart
 Summary: Sign up, buy something, answer the two questions the agent asks. Copy-pasteable curl, then the same flow in TypeScript.
 ------------------------------------------------------------------------------
 
@@ -170,13 +170,13 @@ control — a genuinely placed order, a real variant prompt, real card entry —
 to a real merchant. See [Sandbox](/sandbox) for what changes when you go live.
 
 NOTE:
-The API base URL is `https://api.checkoutvia.com`. Every authenticated call takes
+The API base URL is `https://api.farthing.ai`. Every authenticated call takes
 `Authorization: Bearer <your key>`.
 
 ## 1. Sign up
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/signup \
+curl -sX POST https://api.farthing.ai/v1/signup \
   -H 'content-type: application/json' \
   -d '{"name":"Acme Agents","email":"you@example.com"}'
 ```
@@ -197,7 +197,7 @@ support process, and no database query that can recover it. Lost key means
 `POST /v1/api-keys` for a new one.
 
 ```bash
-export CKV_KEY=ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb
+export FARTHING_KEY=ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb
 ```
 
 ## 2. Store a buyer profile
@@ -206,8 +206,8 @@ The agent needs somewhere to ship. A buyer profile is reusable identity and ship
 you pass its id when creating a checkout.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "default",
@@ -249,8 +249,8 @@ the order can never be placed.
 ## 3. Create the checkout
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -H "idempotency-key: $(uuidgen)" \
   -d '{
@@ -291,7 +291,7 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 ```
 
 ```bash
-export CKV_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
+export FARTHING_ID=1f2e3d4c-5b6a-4790-8123-abcdef012345
 ```
 
 TIP:
@@ -304,8 +304,8 @@ from the *purchase* — a cart id, an order row — so that a retry of that purc
 ## 4. Poll
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Within a few seconds the browser is up and the agent is on the product page. When it needs
@@ -382,8 +382,8 @@ Read `responseSchema.properties`, build an object with the same keys, and submit
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60 \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/7c1de0a2-9b44-4f0a-b3c1-2a5e8d7f4b60 \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{ "action": "submit", "values": { "Size": "M", "Color": "Black" } }'
 ```
@@ -422,8 +422,8 @@ whichever engine drove the checkout:
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4 \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/9a0b4e51-3c78-4a1d-8e26-51b7cf90a2d4 \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "action": "submit",
@@ -481,8 +481,8 @@ No SDK yet — this is plain `fetch` and it is the whole client. Node 20+ or any
 runtime.
 
 ```ts checkout.ts
-const BASE = "https://api.checkoutvia.com";
-const KEY = process.env.CKV_KEY!;
+const BASE = "https://api.farthing.ai";
+const KEY = process.env.FARTHING_KEY!;
 
 type Json = Record<string, any>;
 
@@ -590,7 +590,7 @@ async function main() {
         body: JSON.stringify({
           action: "submit",
           values: {
-            card_number: process.env.CKV_DEMO_CARD!,
+            card_number: process.env.FARTHING_DEMO_CARD!,
             card_expiry: "12 / 30",
             card_cvc: "123",
           },
@@ -643,12 +643,12 @@ main().catch((e) => {
     What a sandbox tenant can and cannot do, and how to go live.
 
 ------------------------------------------------------------------------------
-# Use Checkoutvia from an LLM agent
-Source: https://docs.checkoutvia.com/agents
+# Use Farthing from an LLM agent
+Source: https://docs.farthing.ai/agents
 Summary: Tool definitions for Anthropic and OpenAI, the polling loop an agent has to run, and which of the questions a checkout asks an agent may answer itself.
 ------------------------------------------------------------------------------
 
-Checkoutvia is built to be called by an autonomous agent. This page is for the developer
+Farthing is built to be called by an autonomous agent. This page is for the developer
 wiring one up: the loop, the tool definitions, and — the part that actually decides whether
 your integration is safe — which questions the model may answer and which must go to a person.
 
@@ -746,8 +746,8 @@ useful question is not "do I trust this tenant" but "what is the worst this agen
 prompt is turned against it".
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write","buyer-profiles.read"]}'
 ```
@@ -768,8 +768,8 @@ Add `"subject": "<your user id>"` to the key you mint, and that key can only eve
 rows for that one end user:
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.read"],"subject":"user_a91f"}'
 ```
@@ -796,7 +796,7 @@ against the [API reference](/api-reference/overview) or `openapi.json` if you ch
       "properties": {
         "url": {
           "type": "string",
-          "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+          "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Farthing does not search for products."
         },
         "request": {
           "type": "string",
@@ -888,7 +888,7 @@ against the [API reference](/api-reference/overview) or `openapi.json` if you ch
         "properties": {
           "url": {
             "type": "string",
-            "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+            "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Farthing does not search for products."
           },
           "request": {
             "type": "string",
@@ -1078,9 +1078,9 @@ that carries card values.
 Plain `fetch`, no SDK. This is the tool-handler side — the part you wire behind whichever model
 you are using.
 
-```ts checkoutvia-tools.ts
-const BASE = "https://api.checkoutvia.com";
-const KEY = process.env.CKV_KEY!;
+```ts farthing-tools.ts
+const BASE = "https://api.farthing.ai";
+const KEY = process.env.FARTHING_KEY!;
 
 type Json = Record<string, any>;
 
@@ -1244,20 +1244,20 @@ for as long as it is live.
 ## The zero-code option: MCP
 
 ```bash
-npx checkoutvia-mcp
+npx farthing-mcp
 ```
 
 The MCP server exposes the same surface as tools, so an MCP-capable client — Claude Desktop,
 Claude Code, or your own harness — can drive a checkout with no integration code at all. Set
-`CHECKOUTVIA_API_KEY` and point your client at it.
+`FARTHING_API_KEY` and point your client at it.
 
 ```json
 {
   "mcpServers": {
-    "checkoutvia": {
+    "farthing": {
       "command": "npx",
-      "args": ["-y", "checkoutvia-mcp"],
-      "env": { "CHECKOUTVIA_API_KEY": "ck_test_..." }
+      "args": ["-y", "farthing-mcp"],
+      "env": { "FARTHING_API_KEY": "ck_test_..." }
     }
   }
 }
@@ -1267,16 +1267,16 @@ Five tools:
 
 | Tool | What it does |
 | --- | --- |
-| `checkoutvia_list_buyer_profiles` | Call this **first**. Attaching a stored address stops the run pausing to ask for one. |
-| `checkoutvia_create_checkout` | Starts the purchase. Returns immediately — nothing has been bought yet. |
-| `checkoutvia_get_checkout` | Status, a readable timeline, the question it is waiting on, the receipt. Poll every 10–15s. |
-| `checkoutvia_answer_action` | Answers a `variant` or `shipping` question. Refuses the secret ones — see below. |
-| `checkoutvia_cancel_checkout` | Stops a run and tears down its browser. |
+| `farthing_list_buyer_profiles` | Call this **first**. Attaching a stored address stops the run pausing to ask for one. |
+| `farthing_create_checkout` | Starts the purchase. Returns immediately — nothing has been bought yet. |
+| `farthing_get_checkout` | Status, a readable timeline, the question it is waiting on, the receipt. Poll every 10–15s. |
+| `farthing_answer_action` | Answers a `variant` or `shipping` question. Refuses the secret ones — see below. |
+| `farthing_cancel_checkout` | Stops a run and tears down its browser. |
 
 At the card step the server leads with the merchant's own order total, because that is the
 last moment the price can be questioned before money moves.
 
-`checkoutvia_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
+`farthing_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
 `Idempotency-Key` and will not invent one on your behalf, so two calls are two purchases. Your
 MCP client's own retry or approval behaviour is what stands between a flaky connection and a
 second order — another reason a production integration talks to the HTTP API.
@@ -1310,14 +1310,14 @@ run from a chat window.
 
 ------------------------------------------------------------------------------
 # Authentication
-Source: https://docs.checkoutvia.com/authentication
+Source: https://docs.farthing.ai/authentication
 Summary: Bearer API keys, the scopes they carry, how they are stored, how to rotate them, and what key mode actually controls.
 ------------------------------------------------------------------------------
 
 Every call to `/v1/*` except `POST /v1/signup` requires a bearer token:
 
 ```bash
-curl https://api.checkoutvia.com/v1/checkouts \
+curl https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
 ```
 
@@ -1429,8 +1429,8 @@ against it*.
 
 ```bash
 # An agent that runs checkouts and picks from stored addresses. Nothing else.
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write","buyer-profiles.read"]}'
 ```
@@ -1447,8 +1447,8 @@ Scopes narrow what a key may do. `subject` narrows whose data it may do it to �
 and the one that matters if you run one agent on behalf of many people.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write"],"subject":"user_a91f"}'
 ```
@@ -1468,20 +1468,20 @@ Full contract, including what it deliberately does not cover:
 ## Managing keys
 
 ```bash Create
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"test","label":"ci","scopes":["checkouts.write"]}'
 ```
 
 ```bash List
-curl -s https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash Revoke
-curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/api-keys/$KEY_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Create → 201
@@ -1557,12 +1557,12 @@ on its own.
 
 ```bash
 # Same account, same body. Different key, different outcome.
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_…" -H 'content-type: application/json' \
   -d '{"target":{"url":"https://example-store.com/products/widget"}}'
 # → 403  Cannot check out at example-store.com: This request used a test key. …
 
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_live_…" -H 'content-type: application/json' \
   -d '{"target":{"url":"https://example-store.com/products/widget"}}'
 # → 201
@@ -1638,7 +1638,7 @@ it as a good signal for rotation, not as an audit log.
 
 ------------------------------------------------------------------------------
 # Checkout lifecycle
-Source: https://docs.checkoutvia.com/checkout-lifecycle
+Source: https://docs.farthing.ai/checkout-lifecycle
 Summary: The status machine, every failure reason and its real cause, the progressItems timeline, and the receipt.
 ------------------------------------------------------------------------------
 
@@ -1926,8 +1926,8 @@ transaction record and treat `merchantOrderId` as the join key.
 ## Cancelling
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Returns `202` with an empty body. Cancellation is asynchronous: it stops the run even while
@@ -1958,7 +1958,7 @@ and considerably more for food-delivery-shaped flows than for retail.
 
 ------------------------------------------------------------------------------
 # User actions
-Source: https://docs.checkoutvia.com/user-actions
+Source: https://docs.farthing.ai/user-actions
 Summary: The human-in-the-loop channel: how a request for input arrives, the schema that describes it, how to answer or refuse, and what happens to sensitive values.
 ------------------------------------------------------------------------------
 
@@ -2268,8 +2268,8 @@ NOTE:
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/$ACTION_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{ "action": "submit", "values": { "Size": "M", "Color": "Black" } }'
 ```
@@ -2292,8 +2292,8 @@ with the Zod issues attached.
 
 ```bash
 curl -sX POST \
-  https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+  https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/$ACTION_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{ "action": "decline", "reason": "buyer changed their mind" }'
 ```
@@ -2400,7 +2400,7 @@ in `progressItems`.
 
 ------------------------------------------------------------------------------
 # Webhooks
-Source: https://docs.checkoutvia.com/webhooks
+Source: https://docs.farthing.ai/webhooks
 Summary: Push delivery of checkout status transitions, the signature scheme, and the ordering and replay caveats you have to design around.
 ------------------------------------------------------------------------------
 
@@ -2415,16 +2415,16 @@ webhook is a doorbell, not a delivery.
 ## Registering an endpoint
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
-  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+  -d '{"url":"https://hooks.example.com/farthing","label":"prod"}'
 ```
 
 ```json Response (201)
 {
   "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-  "url": "https://hooks.example.com/checkoutvia",
+  "url": "https://hooks.example.com/farthing",
   "label": "prod",
   "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
 }
@@ -2441,13 +2441,13 @@ Multiple endpoints per tenant are supported and each gets its own secret. Delive
 per-endpoint, so a broken endpoint retries without re-delivering to the healthy ones.
 
 ```bash List
-curl -s https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash Revoke
-curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json List → 200
@@ -2455,7 +2455,7 @@ curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
   "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-      "url": "https://hooks.example.com/checkoutvia",
+      "url": "https://hooks.example.com/farthing",
       "label": "prod",
       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
       "lastDeliveryStatus": 200,
@@ -2578,10 +2578,10 @@ import express from "express";
 import { verifyWebhookSignature } from "./verify.js";
 
 const app = express();
-const SECRET = process.env.CKV_WEBHOOK_SECRET;
+const SECRET = process.env.FARTHING_WEBHOOK_SECRET;
 
 app.post(
-  "/checkoutvia",
+  "/farthing",
   express.raw({ type: "application/json" }),
   (req, res) => {
     const raw = req.body.toString("utf8");
@@ -2659,7 +2659,7 @@ async function handle(event) {
 
 ------------------------------------------------------------------------------
 # Live view
-Source: https://docs.checkoutvia.com/live-view
+Source: https://docs.farthing.ai/live-view
 Summary: Mint a short-lived embed token and iframe the running browser. Read-only, ten-minute expiry, one checkout per token.
 ------------------------------------------------------------------------------
 
@@ -2673,14 +2673,14 @@ into a self-contained page you can drop in an `<iframe>`.
 ## Mint a token
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX POST https://api.farthing.ai/v1/checkouts/$FARTHING_ID/embed-token \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
 {
   "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
-  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "url": "https://api.farthing.ai/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
   "expiresAt": "2026-07-29T09:24:45.000Z"
 }
 ```
@@ -2689,7 +2689,7 @@ Then embed `url` directly:
 
 ```html
 <iframe
-  src="https://api.checkoutvia.com/embed/1f2e3d4c-...?token=eyJhbGciOiJIUzI1NiJ9..."
+  src="https://api.farthing.ai/embed/1f2e3d4c-...?token=eyJhbGciOiJIUzI1NiJ9..."
   style="width: 100%; aspect-ratio: 16 / 10; border: 0; border-radius: 8px"
   title="Live checkout"
 ></iframe>
@@ -2786,7 +2786,7 @@ second CDP client, so watching never disturbs the engine driving the page.
 
 ------------------------------------------------------------------------------
 # Buyer profiles
-Source: https://docs.checkoutvia.com/buyer-profiles
+Source: https://docs.farthing.ai/buyer-profiles
 Summary: Reusable identity and shipping details. Create once, reference by id on every checkout.
 ------------------------------------------------------------------------------
 
@@ -2800,8 +2800,8 @@ most merchants that is where the run stops.
 ## Create
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "ada-home",
@@ -2887,13 +2887,13 @@ postal code does not match the city, you find out when the merchant rejects it.
 ## Read
 
 ```bash Get one
-curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```bash List
-curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json List → 200
@@ -2919,8 +2919,8 @@ page; `nextCursor: null` means you have them all. `limit` defaults to 20 and cap
 ## Update
 
 ```bash
-curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX PATCH https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "shipping": {
@@ -2978,8 +2978,8 @@ resolving the reference later.
 ## Delete
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
@@ -3034,7 +3034,7 @@ never write one person's merchant session onto another person's profile. Naming 
 
 ------------------------------------------------------------------------------
 # Buyer sessions
-Source: https://docs.checkoutvia.com/buyer-sessions
+Source: https://docs.farthing.ai/buyer-sessions
 Summary: Bring your own merchant accounts. What is stored, how it is encrypted, and how to see and revoke it.
 ------------------------------------------------------------------------------
 
@@ -3116,8 +3116,8 @@ checkout.
 ## Listing
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
@@ -3151,8 +3151,8 @@ login is actually doing anything.
 ## Revoking
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-sessions/$SESSION_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-sessions/$SESSION_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json Response (200)
@@ -3201,7 +3201,7 @@ Storing merchant logins is real custodial responsibility. Some honest guidance:
 
 ------------------------------------------------------------------------------
 # End-user isolation
-Source: https://docs.checkoutvia.com/end-user-isolation
+Source: https://docs.farthing.ai/end-user-isolation
 Summary: Bind an API key to one of your end users with `subject`, so the worst a confused or manipulated agent can reach is one person's data.
 ------------------------------------------------------------------------------
 
@@ -3211,8 +3211,8 @@ bound to it, and a bound key can only see and create rows for that one person.
 
 ```bash
 # A key that acts for exactly one of your users, and can never act for another.
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.write"],"subject":"user_a91f"}'
 ```
@@ -3226,7 +3226,7 @@ one sees the whole tenant, exactly as it always has.
 [Scopes](/authentication#scopes) narrow *what* a key may do. `subject` narrows *whose data* it
 may do it to. You need the second axis for the same reason you need the first, only more so.
 
-The holder of a Checkoutvia key is frequently an autonomous agent, and that agent spends its
+The holder of a Farthing key is frequently an autonomous agent, and that agent spends its
 run reading merchant pages — untrusted text, written by someone else, quoted back to the model
 in option names, form labels and progress messages. "List the buyer profiles" is a completely
 plausible call for a confused or prompt-injected agent to make. It is also a call that, on a
@@ -3401,8 +3401,8 @@ for.
 if you would rather keep one admin key than mint one per user:
 
 ```bash Checkout
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "target": { "url": "https://your-sandbox-store.myshopify.com/products/widget", "request": "buy this in medium" },
@@ -3412,8 +3412,8 @@ curl -sX POST https://api.checkoutvia.com/v1/checkouts \
 ```
 
 ```bash Buyer profile
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "home",
@@ -3483,8 +3483,8 @@ matters.
 an admin key can answer "what is this person's agent doing" without fetching every checkout:
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
-  -H "authorization: Bearer $CKV_ADMIN_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY"
 ```
 
 The filter composes with `status`, `limit` and `cursor`. Rows carry `subject` when the checkout has
@@ -3646,7 +3646,7 @@ free again for whoever sends it next.
 
 ------------------------------------------------------------------------------
 # Sandbox
-Source: https://docs.checkoutvia.com/sandbox
+Source: https://docs.farthing.ai/sandbox
 Summary: What sandbox confinement is, the exact refusal you get, and how to reach real merchants.
 ------------------------------------------------------------------------------
 
@@ -3753,7 +3753,7 @@ live; only the target URLs and the key change.
 ## Signing up
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/signup \
+curl -sX POST https://api.farthing.ai/v1/signup \
   -H 'content-type: application/json' \
   -d '{"name":"Acme Agents","email":"you@example.com"}'
 ```
@@ -3845,7 +3845,7 @@ else. A leaked or misconfigured test key cannot cost anyone money.
 
 ------------------------------------------------------------------------------
 # Errors and limits
-Source: https://docs.checkoutvia.com/errors-and-limits
+Source: https://docs.farthing.ai/errors-and-limits
 Summary: Every status code the API returns, the quotas and their real numbers, how maxCost is enforced, and what is honestly missing.
 ------------------------------------------------------------------------------
 
@@ -3982,8 +3982,8 @@ before, with a different body. See below.
 the second call returns the **original** checkout with `200` instead of creating a second one.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -H "idempotency-key: acme-4412" \
   -d '{"target":{"url":"https://your-sandbox-store.myshopify.com/products/widget","request":"buy this in medium"}}'
@@ -4214,11 +4214,11 @@ them rather than discover them.
 
 ------------------------------------------------------------------------------
 # Migrating from Crossmint Agent Checkouts
-Source: https://docs.checkoutvia.com/migrating-from-crossmint
+Source: https://docs.farthing.ai/migrating-from-crossmint
 Summary: The contract was mirrored on purpose. What ports over unchanged, what differs, and what you get on top.
 ------------------------------------------------------------------------------
 
-Checkoutvia is a from-scratch implementation of the same product category as Crossmint Agent
+Farthing is a from-scratch implementation of the same product category as Crossmint Agent
 Checkouts, built from a full teardown of that product. The data model and the request/response
 shapes were mirrored deliberately, so that a client written against that quickstart is a
 port, not a rewrite.
@@ -4266,7 +4266,7 @@ Stated plainly, so you find these at build time rather than in production.
 
   
 #### Authentication and base URL
-    `https://api.checkoutvia.com`, and `Authorization: Bearer ck_test_…` / `ck_live_…`.
+    `https://api.farthing.ai`, and `Authorization: Bearer ck_test_…` / `ck_live_…`.
 
     Keys are created and revoked through the API itself (`/v1/api-keys`), stored only as a
     hash, and shown once. See [Authentication](/authentication).
@@ -4413,7 +4413,7 @@ Four smaller ones worth knowing about:
 
   
 #### Swap base URL and auth
-    `https://api.checkoutvia.com`, `Authorization: Bearer ck_…`. Sign up with
+    `https://api.farthing.ai`, `Authorization: Bearer ck_…`. Sign up with
     `POST /v1/signup` for a sandbox key in one call.
 
   
@@ -4461,14 +4461,14 @@ Four smaller ones worth knowing about:
 
 ------------------------------------------------------------------------------
 # Overview
-Source: https://docs.checkoutvia.com/api-reference/overview
+Source: https://docs.farthing.ai/api-reference/overview
 Summary: Base URL, conventions, and every endpoint on one page.
 ------------------------------------------------------------------------------
 
 ## Base URL
 
 ```
-https://api.checkoutvia.com
+https://api.farthing.ai
 ```
 
 Everything tenant-scoped lives under `/v1` and requires `Authorization: Bearer <key>`. Two
@@ -4556,7 +4556,7 @@ a minted JWT rather than an API key, and returns HTML and `text/event-stream`. S
 
 | Method | Path | Auth |
 | --- | --- | --- |
-| `GET` | `/health` | none — returns `{ "ok": true, "service": "checkoutvia" }` |
+| `GET` | `/health` | none — returns `{ "ok": true, "service": "farthing" }` |
 
 ### [Signup](/api-reference/signup)
 
@@ -4631,11 +4631,11 @@ Documented in [Live view](/live-view).
 NOTE:
 There is no SDK yet. Everything here is plain HTTP; the [Quickstart](/quickstart) has a
 complete TypeScript client in about a hundred lines of `fetch`, and
-[Use Checkoutvia from an LLM agent](/agents) has the same thing shaped as model tools.
+[Use Farthing from an LLM agent](/agents) has the same thing shaped as model tools.
 
 ------------------------------------------------------------------------------
 # Signup
-Source: https://docs.checkoutvia.com/api-reference/signup
+Source: https://docs.farthing.ai/api-reference/signup
 Summary: Self-serve account creation. The one unauthenticated write on the API.
 ------------------------------------------------------------------------------
 
@@ -4650,7 +4650,7 @@ Success: `201`.
 No authentication. Returns a sandbox-only tenant and one `ck_test_` key.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/signup \
+curl -sX POST https://api.farthing.ai/v1/signup \
   -H 'content-type: application/json' \
   -d '{"name":"Acme Agents","email":"you@example.com"}'
 ```
@@ -4712,7 +4712,7 @@ real money is reachable at all. See [Sandbox](/sandbox).
 
 ------------------------------------------------------------------------------
 # Checkouts
-Source: https://docs.checkoutvia.com/api-reference/checkouts
+Source: https://docs.farthing.ai/api-reference/checkouts
 Summary: Create, list, get, cancel, and mint a live-view token.
 ------------------------------------------------------------------------------
 
@@ -4725,8 +4725,8 @@ POST /v1/checkouts
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/checkouts \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -H "idempotency-key: acme-4412" \
   -d '{
@@ -4941,8 +4941,8 @@ GET /v1/checkouts/{id}
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 This is the object you poll, and it is the same shape returned by create and by submitting an
@@ -5052,12 +5052,12 @@ GET /v1/checkouts
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/checkouts?status=awaiting_user_action&limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?status=awaiting_user_action&limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 
 # One end user's runs, from a tenant-wide key.
-curl -s "https://api.checkoutvia.com/v1/checkouts?subject=user_a91f&limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/checkouts?subject=user_a91f&limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ### Query
@@ -5152,8 +5152,8 @@ DELETE /v1/checkouts/{id}
 Success: `202`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/checkouts/$CKV_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/checkouts/$FARTHING_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Returns `202` with an **empty body**.
@@ -5182,14 +5182,14 @@ POST /v1/checkouts/{id}/embed-token
 Success: `200`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/checkouts/$CKV_ID/embed-token \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX POST https://api.farthing.ai/v1/checkouts/$FARTHING_ID/embed-token \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
 {
   "token": "eyJhbGciOiJIUzI1NiJ9.eyJjaGVja291dElkIjoiMWYyZTNkNGMtNWI2YS00NzkwLTgxMjMtYWJjZGVmMDEyMzQ1IiwiZXhwIjoxNzg1MzE4Mjg1fQ.Qy8xVnZ0S2c",
-  "url": "https://api.checkoutvia.com/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
+  "url": "https://api.farthing.ai/embed/1f2e3d4c-5b6a-4790-8123-abcdef012345?token=eyJhbGciOiJIUzI1NiJ9...",
   "expiresAt": "2026-07-29T09:24:45.000Z"
 }
 ```
@@ -5207,7 +5207,7 @@ Body is ignored; no parameters. `404 Checkout not found` if it is not yours. See
 
 ------------------------------------------------------------------------------
 # User actions
-Source: https://docs.checkoutvia.com/api-reference/user-actions
+Source: https://docs.farthing.ai/api-reference/user-actions
 Summary: Submit or decline a pending user action.
 ------------------------------------------------------------------------------
 
@@ -5248,8 +5248,8 @@ A discriminated union on `action`. Nothing else validates.
 
     ```bash
     curl -sX POST \
-      https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
-      -H "authorization: Bearer $CKV_KEY" \
+      https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/$ACTION_ID \
+      -H "authorization: Bearer $FARTHING_KEY" \
       -H 'content-type: application/json' \
       -d '{
         "action": "submit",
@@ -5276,8 +5276,8 @@ A discriminated union on `action`. Nothing else validates.
 
     ```bash
     curl -sX POST \
-      https://api.checkoutvia.com/v1/checkouts/$CKV_ID/actions/$ACTION_ID \
-      -H "authorization: Bearer $CKV_KEY" \
+      https://api.farthing.ai/v1/checkouts/$FARTHING_ID/actions/$ACTION_ID \
+      -H "authorization: Bearer $FARTHING_KEY" \
       -H 'content-type: application/json' \
       -d '{ "action": "decline", "reason": "no operator available" }'
     ```
@@ -5352,7 +5352,7 @@ Submitted values are not returned by any endpoint. Full detail in
 
 ------------------------------------------------------------------------------
 # Buyer profiles
-Source: https://docs.checkoutvia.com/api-reference/buyer-profiles
+Source: https://docs.farthing.ai/api-reference/buyer-profiles
 Summary: Create, get, list, update and delete reusable identity and shipping details.
 ------------------------------------------------------------------------------
 
@@ -5367,8 +5367,8 @@ POST /v1/buyer-profiles
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/buyer-profiles \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/buyer-profiles \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "label": "ada-home",
@@ -5482,8 +5482,8 @@ GET /v1/buyer-profiles/{id}
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 Same object as create. `404 Profile not found` if it does not exist, is not yours, or belongs to
@@ -5500,8 +5500,8 @@ GET /v1/buyer-profiles
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/buyer-profiles?limit=20" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-profiles?limit=20" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 - **limit** (integer):
@@ -5544,8 +5544,8 @@ PATCH /v1/buyer-profiles/{id}
 Success: `200`, returning the full updated profile.
 
 ```bash
-curl -sX PATCH https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX PATCH https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "shipping": {
@@ -5617,8 +5617,8 @@ DELETE /v1/buyer-profiles/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-profiles/$PROFILE_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-profiles/$PROFILE_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -5645,7 +5645,7 @@ if nothing more should ship.
 
 ------------------------------------------------------------------------------
 # Buyer sessions
-Source: https://docs.checkoutvia.com/api-reference/buyer-sessions
+Source: https://docs.farthing.ai/api-reference/buyer-sessions
 Summary: List and revoke stored merchant login sessions.
 ------------------------------------------------------------------------------
 
@@ -5661,8 +5661,8 @@ GET /v1/buyer-sessions
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/buyer-sessions?buyerProfileId=$PROFILE_ID" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 - **buyerProfileId** (string):
@@ -5715,8 +5715,8 @@ DELETE /v1/buyer-sessions/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/buyer-sessions/$SESSION_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/buyer-sessions/$SESSION_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -5746,7 +5746,7 @@ login it supervised produced, scoped to that merchant's domains, and nothing els
 
 ------------------------------------------------------------------------------
 # Webhooks
-Source: https://docs.checkoutvia.com/api-reference/webhooks
+Source: https://docs.farthing.ai/api-reference/webhooks
 Summary: Register, list and revoke webhook endpoints.
 ------------------------------------------------------------------------------
 
@@ -5762,10 +5762,10 @@ POST /v1/webhooks
 Success: `201`.
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
-  -d '{"url":"https://hooks.example.com/checkoutvia","label":"prod"}'
+  -d '{"url":"https://hooks.example.com/farthing","label":"prod"}'
 ```
 
 - **url** (string):
@@ -5777,7 +5777,7 @@ curl -sX POST https://api.checkoutvia.com/v1/webhooks \
 ```json Response (201)
 {
   "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-  "url": "https://hooks.example.com/checkoutvia",
+  "url": "https://hooks.example.com/farthing",
   "label": "prod",
   "secret": "whsec_kR7pXvT2mQ9fLbN4hJ8sYc1WdE6aZg0u"
 }
@@ -5804,8 +5804,8 @@ GET /v1/webhooks
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/webhooks \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/webhooks \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -5813,7 +5813,7 @@ curl -s https://api.checkoutvia.com/v1/webhooks \
   "data": [
     {
       "id": "c81b0d5e-4a71-4a1e-9a2f-6f83b1c04e29",
-      "url": "https://hooks.example.com/checkoutvia",
+      "url": "https://hooks.example.com/farthing",
       "label": "prod",
       "lastDeliveryAt": "2026-07-29T09:26:29.881Z",
       "lastDeliveryStatus": 200,
@@ -5851,8 +5851,8 @@ DELETE /v1/webhooks/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/webhooks/$ENDPOINT_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/webhooks/$ENDPOINT_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -5866,7 +5866,7 @@ timestamp, not a row delete, so the delivery history is preserved.
 
 ------------------------------------------------------------------------------
 # API keys
-Source: https://docs.checkoutvia.com/api-reference/api-keys
+Source: https://docs.farthing.ai/api-reference/api-keys
 Summary: Create, list and revoke API keys, and the scopes they carry.
 ------------------------------------------------------------------------------
 
@@ -5882,15 +5882,15 @@ POST /v1/api-keys
 Success: `201`.
 
 ```bash Tenant-wide
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write"]}'
 ```
 
 ```bash Bound to one end user
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write"],"subject":"user_a91f"}'
 ```
@@ -6008,8 +6008,8 @@ GET /v1/api-keys
 Success: `200`.
 
 ```bash
-curl -s https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -6085,8 +6085,8 @@ DELETE /v1/api-keys/{id}
 Success: `200`.
 
 ```bash
-curl -sX DELETE https://api.checkoutvia.com/v1/api-keys/$KEY_ID \
-  -H "authorization: Bearer $CKV_KEY"
+curl -sX DELETE https://api.farthing.ai/v1/api-keys/$KEY_ID \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ```json
@@ -6105,7 +6105,7 @@ one is in use — check that the old key's `lastUsedAt` has stopped advancing.
 
 ------------------------------------------------------------------------------
 # Usage
-Source: https://docs.checkoutvia.com/api-reference/usage
+Source: https://docs.farthing.ai/api-reference/usage
 Summary: Completed checkouts by day, and gross merchandise volume by currency.
 ------------------------------------------------------------------------------
 
@@ -6118,8 +6118,8 @@ GET /v1/usage
 Success: `200`.
 
 ```bash
-curl -s "https://api.checkoutvia.com/v1/usage?from=2026-07-01&to=2026-08-01" \
-  -H "authorization: Bearer $CKV_KEY"
+curl -s "https://api.farthing.ai/v1/usage?from=2026-07-01&to=2026-08-01" \
+  -H "authorization: Bearer $FARTHING_KEY"
 ```
 
 ### Query

@@ -1,9 +1,9 @@
 ---
-title: "Use Checkoutvia from an LLM agent"
+title: "Use Farthing from an LLM agent"
 description: "Tool definitions for Anthropic and OpenAI, the polling loop an agent has to run, and which of the questions a checkout asks an agent may answer itself."
 ---
 
-Checkoutvia is built to be called by an autonomous agent. This page is for the developer
+Farthing is built to be called by an autonomous agent. This page is for the developer
 wiring one up: the loop, the tool definitions, and — the part that actually decides whether
 your integration is safe — which questions the model may answer and which must go to a person.
 
@@ -102,8 +102,8 @@ useful question is not "do I trust this tenant" but "what is the worst this agen
 prompt is turned against it".
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"shopping-agent","scopes":["checkouts.write","buyer-profiles.read"]}'
 ```
@@ -125,8 +125,8 @@ Add `"subject": "<your user id>"` to the key you mint, and that key can only eve
 rows for that one end user:
 
 ```bash
-curl -sX POST https://api.checkoutvia.com/v1/api-keys \
-  -H "authorization: Bearer $CKV_ADMIN_KEY" \
+curl -sX POST https://api.farthing.ai/v1/api-keys \
+  -H "authorization: Bearer $FARTHING_ADMIN_KEY" \
   -H 'content-type: application/json' \
   -d '{"mode":"live","label":"agent for user_a91f","scopes":["checkouts.write","buyer-profiles.read"],"subject":"user_a91f"}'
 ```
@@ -154,7 +154,7 @@ against the [API reference](/api-reference/overview) or `openapi.json` if you ch
       "properties": {
         "url": {
           "type": "string",
-          "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+          "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Farthing does not search for products."
         },
         "request": {
           "type": "string",
@@ -246,7 +246,7 @@ against the [API reference](/api-reference/overview) or `openapi.json` if you ch
         "properties": {
           "url": {
             "type": "string",
-            "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Checkoutvia does not search for products."
+            "description": "The product page to buy from. Must be a page a person could buy from — a product or cart URL, not a search results page. You must have this URL already; Farthing does not search for products."
           },
           "request": {
             "type": "string",
@@ -439,9 +439,9 @@ that carries card values.
 Plain `fetch`, no SDK. This is the tool-handler side — the part you wire behind whichever model
 you are using.
 
-```ts checkoutvia-tools.ts
-const BASE = "https://api.checkoutvia.com";
-const KEY = process.env.CKV_KEY!;
+```ts farthing-tools.ts
+const BASE = "https://api.farthing.ai";
+const KEY = process.env.FARTHING_KEY!;
 
 type Json = Record<string, any>;
 
@@ -606,20 +606,20 @@ for as long as it is live.
 ## The zero-code option: MCP
 
 ```bash
-npx checkoutvia-mcp
+npx farthing-mcp
 ```
 
 The MCP server exposes the same surface as tools, so an MCP-capable client — Claude Desktop,
 Claude Code, or your own harness — can drive a checkout with no integration code at all. Set
-`CHECKOUTVIA_API_KEY` and point your client at it.
+`FARTHING_API_KEY` and point your client at it.
 
 ```json
 {
   "mcpServers": {
-    "checkoutvia": {
+    "farthing": {
       "command": "npx",
-      "args": ["-y", "checkoutvia-mcp"],
-      "env": { "CHECKOUTVIA_API_KEY": "ck_test_..." }
+      "args": ["-y", "farthing-mcp"],
+      "env": { "FARTHING_API_KEY": "ck_test_..." }
     }
   }
 }
@@ -629,16 +629,16 @@ Five tools:
 
 | Tool | What it does |
 | --- | --- |
-| `checkoutvia_list_buyer_profiles` | Call this **first**. Attaching a stored address stops the run pausing to ask for one. |
-| `checkoutvia_create_checkout` | Starts the purchase. Returns immediately — nothing has been bought yet. |
-| `checkoutvia_get_checkout` | Status, a readable timeline, the question it is waiting on, the receipt. Poll every 10–15s. |
-| `checkoutvia_answer_action` | Answers a `variant` or `shipping` question. Refuses the secret ones — see below. |
-| `checkoutvia_cancel_checkout` | Stops a run and tears down its browser. |
+| `farthing_list_buyer_profiles` | Call this **first**. Attaching a stored address stops the run pausing to ask for one. |
+| `farthing_create_checkout` | Starts the purchase. Returns immediately — nothing has been bought yet. |
+| `farthing_get_checkout` | Status, a readable timeline, the question it is waiting on, the receipt. Poll every 10–15s. |
+| `farthing_answer_action` | Answers a `variant` or `shipping` question. Refuses the secret ones — see below. |
+| `farthing_cancel_checkout` | Stops a run and tears down its browser. |
 
 At the card step the server leads with the merchant's own order total, because that is the
 last moment the price can be questioned before money moves.
 
-`checkoutvia_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
+`farthing_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
 `Idempotency-Key` and will not invent one on your behalf, so two calls are two purchases. Your
 MCP client's own retry or approval behaviour is what stands between a flaky connection and a
 second order — another reason a production integration talks to the HTTP API.
