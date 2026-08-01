@@ -7,7 +7,7 @@ You can watch the browser work. `progressItems` tells you what happened; the liv
 you the page it happened on — which is the difference between "the agent failed at the
 payment step" and "oh, there is a full-screen coupon modal over the pay button".
 
-It is a JPEG screencast of the running browser, streamed over Server-Sent Events, rendered
+It is a live JPEG stream of the running browser, delivered over Server-Sent Events, rendered
 into a self-contained page you can drop in an `<iframe>`.
 
 ## Mint a token
@@ -90,13 +90,13 @@ event types:
 | Event | Data | Meaning |
 | --- | --- | --- |
 | `status` | the current status | Sent once, immediately on connect. |
-| `frame` | base64 JPEG | A screencast frame. Render as `data:image/jpeg;base64,<data>`. |
+| `frame` | base64 JPEG | One frame of the live view. Render as `data:image/jpeg;base64,<data>`. |
 | `ping` | empty | Heartbeat, roughly every 5 seconds. |
 | `ended` | terminal status, or `browser_unavailable` / `gone` | The stream is over; the client closes. |
 
 Connecting to a checkout that is already terminal, or that has no browser session, emits
 `status` then `ended` immediately rather than hanging. The viewer's own connection uses a
-second CDP client, so watching never disturbs the engine driving the page.
+separate observation channel, so watching never disturbs the run driving the page.
 
 ## Gotchas
 

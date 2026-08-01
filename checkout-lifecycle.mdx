@@ -97,7 +97,7 @@ on a card prompt does not keep advertising that prompt forever.
     Enforced at two points, both **before** any card is requested and long before anything is
     charged:
 
-    1. **Item price (Shopify tier only).** When the variant resolves, its price is compared
+    1. **Item price (major platforms).** Where the variant's price is known before checkout, it is compared
        against `constraints.maxCost`. This check ignores currency — the storefront product
        JSON does not state one — and covers the item price only, not shipping or tax.
        Message: `Item price 45.00 exceeds maxCost 40.00`.
@@ -144,7 +144,7 @@ on a card prompt does not keep advertising that prompt forever.
     - `Could not read product JSON: product JSON returned 403` — the storefront blocked or
       changed its product endpoint (retried with backoff first).
     - `Add to cart failed`
-    - `Unexpected phase at https://example-store.com/...` — the Shopify engine landed on a
+    - `Unexpected phase at https://example-store.com/...` — the run landed on a
       URL it could not classify as product / cart / checkout / confirmation.
     - `Could not reach the payment step` — no continue button was found after several
       attempts.
@@ -171,7 +171,7 @@ on a card prompt does not keep advertising that prompt forever.
     - `Exceeded max checkout steps` — 12 units of work, each being a phase transition, a
       checkout step, an agent run, or a user-action pause.
     - Anything thrown after the orchestrator exhausted its retries: the browser died, the
-      CDP connection dropped, the engine raised. The thrown error's message is recorded.
+      browser connection dropped, the engine raised. The thrown error's message is recorded.
 
     <Note>
     `Timed out waiting for order confirmation` deserves care in your own handling. It means
@@ -218,10 +218,10 @@ whole diffing algorithm you need.
   Everything the engine does. Examples you will actually see:
 
   - `Browser session started` — `data` carries `{ "exitCountry": "GB" }` when the run went
-    out through a country-specific proxy exit.
+    out through a region-matched network egress.
   - `Loaded saved merchant session` — `data: { "cookieCount": 14 }`. A stored buyer session
     was preloaded. See [Buyer sessions](/buyer-sessions).
-  - `Checkout phase: product` (Shopify tier) — `data: { "url": "..." }`.
+  - `Checkout phase: product` (major platforms) — `data: { "url": "..." }`.
   - `Selected Widget — M / Black` — `data: { "variantId": 44127788, "price": 4210 }`, price
     in minor units.
   - `Filled contact and shipping details`
@@ -244,7 +244,7 @@ whole diffing algorithm you need.
   This is currently the only place the action key is exposed — see
   [Identifying an action](/user-actions#identifying-an-action).
 
-  On the Shopify tier the card step writes two entries: a bare
+  On major platforms the card step writes two entries: a bare
   `Waiting for payment details` (no `data.key`) immediately before the action is persisted,
   then the keyed one. Read the newest entry that has `data.key`.
 </ResponseField>

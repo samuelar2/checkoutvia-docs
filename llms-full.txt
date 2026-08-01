@@ -40,7 +40,7 @@ You give it a URL and a sentence:
 }
 ```
 
-Behind that call a real Chromium browser opens the page, works out how the merchant's
+Behind that call a real browser session opens the page, works out how the merchant's
 checkout is put together, fills in contact and shipping details from a buyer profile you
 stored earlier, picks the cheapest shipping option, and reaches the payment step. When it
 hits something only a human can answer — which size, what card, a login, a one-time code —
@@ -96,36 +96,18 @@ over four endpoints, and never needs a browser of its own.
     A `succeeded` checkout carries a `receipt` with the merchant's order id, the total
     charged, and the confirmation URL the agent saw.
 
-## Two engines, chosen per run
+## One API, adaptive under the hood
 
-The tier is decided once, at the start of a run, by probing the live page, and then pinned
-for the rest of the run.
-
-  
-#### Tier 1 — Shopify
-    Deterministic. No model in the loop. Shopify's storefront exposes structured product
-    JSON, so the variant is resolved from data rather than guessed, and the checkout is
-    walked with known field patterns. Fastest, cheapest, most reliable — and it covers a
-    large share of the merchants agentic commerce actually targets.
-
-  
-#### Tier 2 — general DOM agent
-    Everything else. Claude picks one action per turn over a numbered map of the page's
-    interactive elements. No screenshots: form-driven checkouts do not need vision, and
-    text is far cheaper per turn.
-
-Which tier ran is visible in the timeline, not as a field you configure. You do not choose
-it and you should not need to care, beyond knowing that Shopify stores are the well-trodden
-path.
+Farthing decides how to drive each merchant at the start of a run and pins that choice for the run's duration. Major storefront platforms take a faster, battle-hardened path; everything else is handled by the general checkout agent. You do not choose a strategy and you should not need to care — the same request shape, timeline, and guarantees apply everywhere. The practical difference you will notice is speed: well-trodden platforms usually reach the payment step in seconds.
 
 ## What we will not do
 
 These are deliberate refusals, not gaps.
 
 - **We never place an order without a card the user supplied for this purchase.** Payment
-  is the one irreversible step, and it is handled by deterministic code, never improvised
-  by the model. The agent physically cannot see card fields — they live in cross-origin
-  iframes outside its DOM map.
+  is the one irreversible step. It is executed by deterministic code with the values the
+  user provided — never improvised by a model, which by construction cannot read or handle
+  card fields at all.
 - **We never invent credentials or create accounts.** A login wall becomes a `credentials`
   user action, not a guess.
 - **We never tick a marketing opt-in.** Not "we prompt the model not to" — the click is
@@ -785,7 +767,7 @@ your integration is safe — which questions the model may answer and which must
     `cancelled` carry `failure.reason`. Those three statuses are terminal.
 
 This is not request/response, and building it as if it were is the single most common way to
-get this wrong. A run takes **two to three minutes** on the Shopify tier and longer on the
+get this wrong. A run takes **two to three minutes** on well-trodden platforms and longer on the
 general DOM tier, and it will typically **stop twice** — once for a variant, once for a card —
 each time waiting up to ten minutes for an answer. Budget for a conversation that spans
 minutes and survives your process restarting, not for a tool call that returns a purchase.
@@ -1894,7 +1876,7 @@ on a card prompt does not keep advertising that prompt forever.
     Enforced at two points, both **before** any card is requested and long before anything is
     charged:
 
-    1. **Item price (Shopify tier only).** When the variant resolves, its price is compared
+    1. **Item price (major platforms).** Where the variant's price is known before checkout, it is compared
        against `constraints.maxCost`. This check ignores currency — the storefront product
        JSON does not state one — and covers the item price only, not shipping or tax.
        Message: `Item price 45.00 exceeds maxCost 40.00`.
@@ -1941,7 +1923,7 @@ WARNING:
     - `Could not read product JSON: product JSON returned 403` — the storefront blocked or
       changed its product endpoint (retried with backoff first).
     - `Add to cart failed`
-    - `Unexpected phase at https://example-store.com/...` — the Shopify engine landed on a
+    - `Unexpected phase at https://example-store.com/...` — the run landed on a
       URL it could not classify as product / cart / checkout / confirmation.
     - `Could not reach the payment step` — no continue button was found after several
       attempts.
@@ -1968,7 +1950,7 @@ WARNING:
     - `Exceeded max checkout steps` — 12 units of work, each being a phase transition, a
       checkout step, an agent run, or a user-action pause.
     - Anything thrown after the orchestrator exhausted its retries: the browser died, the
-      CDP connection dropped, the engine raised. The thrown error's message is recorded.
+      browser connection dropped, the engine raised. The thrown error's message is recorded.
 
     
 NOTE:
@@ -2012,10 +1994,10 @@ whole diffing algorithm you need.
   Everything the engine does. Examples you will actually see:
 
   - `Browser session started` — `data` carries `{ "exitCountry": "GB" }` when the run went
-    out through a country-specific proxy exit.
+    out through a region-matched network egress.
   - `Loaded saved merchant session` — `data: { "cookieCount": 14 }`. A stored buyer session
     was preloaded. See [Buyer sessions](/buyer-sessions).
-  - `Checkout phase: product` (Shopify tier) — `data: { "url": "..." }`.
+  - `Checkout phase: product` (major platforms) — `data: { "url": "..." }`.
   - `Selected Widget — M / Black` — `data: { "variantId": 44127788, "price": 4210 }`, price
     in minor units.
   - `Filled contact and shipping details`
@@ -2037,7 +2019,7 @@ whole diffing algorithm you need.
   This is currently the only place the action key is exposed — see
   [Identifying an action](/user-actions#identifying-an-action).
 
-  On the Shopify tier the card step writes two entries: a bare
+  On major platforms the card step writes two entries: a bare
   `Waiting for payment details` (no `data.key`) immediately before the action is persisted,
   then the keyed one. Read the newest entry that has `data.key`.
 
@@ -2282,7 +2264,7 @@ const isCardAction =
 
   
 #### variant
-    Shopify tier only. Raised when the product has several variants and the free-text
+    Major platforms only. Raised when the product has several variants and the free-text
     `request` did not pick one out.
 
     Property **names are the merchant's own option names** — `Size`, `Color`,
@@ -2826,7 +2808,7 @@ You can watch the browser work. `progressItems` tells you what happened; the liv
 you the page it happened on — which is the difference between "the agent failed at the
 payment step" and "oh, there is a full-screen coupon modal over the pay button".
 
-It is a JPEG screencast of the running browser, streamed over Server-Sent Events, rendered
+It is a live JPEG stream of the running browser, delivered over Server-Sent Events, rendered
 into a self-contained page you can drop in an `<iframe>`.
 
 ## Mint a token
@@ -2905,13 +2887,13 @@ event types:
 | Event | Data | Meaning |
 | --- | --- | --- |
 | `status` | the current status | Sent once, immediately on connect. |
-| `frame` | base64 JPEG | A screencast frame. Render as `data:image/jpeg;base64,<data>`. |
+| `frame` | base64 JPEG | One frame of the live view. Render as `data:image/jpeg;base64,<data>`. |
 | `ping` | empty | Heartbeat, roughly every 5 seconds. |
 | `ended` | terminal status, or `browser_unavailable` / `gone` | The stream is over; the client closes. |
 
 Connecting to a checkout that is already terminal, or that has no browser session, emits
 `status` then `ended` immediately rather than hanging. The viewer's own connection uses a
-second CDP client, so watching never disturbs the engine driving the page.
+separate observation channel, so watching never disturbs the run driving the page.
 
 ## Gotchas
 
@@ -3868,7 +3850,7 @@ live; only the target URLs and the key change.
     ```json
     {
       "error": true,
-      "message": "Cannot check out at example-store.com: This account is sandbox-only. Contact us to enable live checkouts. Sandbox merchants: your-sandbox-store.myshopify.com.",
+      "message": "Cannot check out at example-store.com: This account is sandbox-only. Activate it from your dashboard to check out at real merchants. Sandbox merchants: your-sandbox-store.myshopify.com.",
       "sandboxMerchants": ["your-sandbox-store.myshopify.com"]
     }
     ```
@@ -4470,7 +4452,7 @@ for it.
 **before** a card is ever requested, so a breach costs you nothing.
 
   
-#### Item price — Shopify tier only
+#### Item price — major platforms only
     When the variant resolves, its price is compared against `maxCost`. This is the item
     price alone: no shipping, no tax. It also ignores currency, because the storefront
     product JSON does not state one.
@@ -5186,7 +5168,7 @@ The top level is **strict**: an unknown field is a `400`, not a field we drop fo
       cheapest delivery"`. Omitted, the agent's goal is simply "complete the purchase" —
       which usually means it has to ask you which variant.
 
-      On the Shopify tier this is also how the variant prompt is avoided: option values are
+      On major platforms this is also how the variant prompt is avoided: option values are
       matched as whole words, and one unambiguous winner skips the question.
     - **merchantContext** (string):
       Up to 4000 characters of hints about this specific merchant, passed to the tier-2
@@ -5825,7 +5807,7 @@ there. The nested `name`, `contact` and `shipping` objects are not strict.
   
 #### shipping
     - **addressLines** (string[]):
-      Only the **first** line is filled on the Shopify tier. Put an apartment number on line
+      Only the **first** line is filled on some platforms. Put an apartment number on line
       one if it matters.
     - **locality** (string):City / town.
     - **administrativeAreaCode** (string):

@@ -3239,7 +3239,7 @@
           "countryCode": {
             "type": "string",
             "pattern": "^[A-Za-z]{2}$",
-            "description": "ISO 3166-1 alpha-2 for the merchant. Selects the residential proxy exit so the merchant sees a local visitor. Inferred from the URL's ccTLD when omitted."
+            "description": "ISO 3166-1 alpha-2 for the merchant. Matches network egress to the merchant's region so it sees a local visitor. Inferred from the URL's ccTLD when omitted."
           }
         }
       },
@@ -3668,7 +3668,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Only the **first** line is filled on the Shopify tier. Put an apartment number on line one if it matters."
+            "description": "Only the **first** line is filled on some platforms. Put an apartment number on line one if it matters."
           },
           "locality": {
             "type": "string",

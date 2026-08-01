@@ -17,7 +17,7 @@ You give it a URL and a sentence:
 }
 ```
 
-Behind that call a real Chromium browser opens the page, works out how the merchant's
+Behind that call a real browser session opens the page, works out how the merchant's
 checkout is put together, fills in contact and shipping details from a buyer profile you
 stored earlier, picks the cheapest shipping option, and reaches the payment step. When it
 hits something only a human can answer — which size, what card, a login, a one-time code —
@@ -73,37 +73,23 @@ over four endpoints, and never needs a browser of its own.
   </Step>
 </Steps>
 
-## Two engines, chosen per run
+## One API, adaptive under the hood
 
-The tier is decided once, at the start of a run, by probing the live page, and then pinned
-for the rest of the run.
-
-<CardGroup cols={2}>
-  <Card title="Tier 1 — Shopify" icon="bolt">
-    Deterministic. No model in the loop. Shopify's storefront exposes structured product
-    JSON, so the variant is resolved from data rather than guessed, and the checkout is
-    walked with known field patterns. Fastest, cheapest, most reliable — and it covers a
-    large share of the merchants agentic commerce actually targets.
-  </Card>
-  <Card title="Tier 2 — general DOM agent" icon="compass">
-    Everything else. Claude picks one action per turn over a numbered map of the page's
-    interactive elements. No screenshots: form-driven checkouts do not need vision, and
-    text is far cheaper per turn.
-  </Card>
-</CardGroup>
-
-Which tier ran is visible in the timeline, not as a field you configure. You do not choose
-it and you should not need to care, beyond knowing that Shopify stores are the well-trodden
-path.
+Farthing decides how to drive each merchant at the start of a run and pins that choice for
+the run's duration. Major storefront platforms take a faster, battle-hardened path;
+everything else is handled by the general checkout agent. You do not choose a strategy and
+you should not need to care — the same request shape, timeline, and guarantees apply
+everywhere. The practical difference you will notice is speed: well-trodden platforms
+usually reach the payment step in seconds.
 
 ## What we will not do
 
 These are deliberate refusals, not gaps.
 
 - **We never place an order without a card the user supplied for this purchase.** Payment
-  is the one irreversible step, and it is handled by deterministic code, never improvised
-  by the model. The agent physically cannot see card fields — they live in cross-origin
-  iframes outside its DOM map.
+  is the one irreversible step. It is executed by deterministic code with the values the
+  user provided — never improvised by a model, which by construction cannot read or handle
+  card fields at all.
 - **We never invent credentials or create accounts.** A login wall becomes a `credentials`
   user action, not a guess.
 - **We never tick a marketing opt-in.** Not "we prompt the model not to" — the click is
