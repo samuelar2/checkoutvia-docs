@@ -46,6 +46,7 @@ default branch. The dashboard is where the custom domain and analytics live.
 docs.json                   site config, theme, and the whole navigation tree
 favicon.svg
 introduction.mdx            what the product is
+pricing.mdx                 the money model: platform fee + $1 per completed checkout
 quickstart.mdx              end-to-end walkthrough, curl + TypeScript
 authentication.mdx
 checkout-lifecycle.mdx      status machine, failure reasons, timeline, receipt
@@ -55,6 +56,7 @@ live-view.mdx
 buyer-profiles.mdx
 buyer-sessions.mdx
 sandbox.mdx
+going-live.mdx              sandbox → live: plan + identity + AUP, self-serve
 errors-and-limits.mdx
 migrating-from-crossmint.mdx
 api-reference/              one page per endpoint group

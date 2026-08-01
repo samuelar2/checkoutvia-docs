@@ -173,27 +173,29 @@ Two things have to be true: the account must be activated, and the request must 
 
 ### Activating the account
 
-There is no self-serve activation, and that is deliberate. Flipping an account out of
-sandbox-only means it becomes *able* to spend real money at real merchants, which is not a
-button we are willing to put behind a form.
+Activation is self-serve, from the dashboard at `app.farthing.ai`, and fully automated: hold
+a [paid plan](/pricing), verify your identity through Stripe, accept the AUP, and the
+workspace flips to live the moment all three are true. No approval queue. The whole journey
+is on [Going live](/going-live).
 
-Get in touch. What we need to know is roughly: who the buyers are, which merchants you expect
-to target, what card instruments you will use, and what your volume looks like.
+One thing to know before you start: activation is driven from a **dashboard workspace**. A
+tenant created with the curl-only `POST /v1/signup` below has no dashboard account attached
+and cannot be activated — sign up at the dashboard when you intend to go live.
 
 ### After activation
 
 - `sandboxOnly` is false, so the account-level refusal on `POST /v1/api-keys` with
   `{"mode":"live"}` is gone.
-- **Ask us for your first `ck_live_` key while you are arranging activation.** A `ck_test_` key
-  cannot issue a live one — authority passes down, never sideways — and every key a self-serve
-  signup has is a test key, so that first live credential has to come from us. After that you can
-  mint as many live keys as you like from it. See
+- **Mint your first `ck_live_` key from the dashboard.** A `ck_test_` key still cannot issue
+  a live one — authority passes down, never sideways — but the dashboard session of an
+  activated workspace counts as a live credential, and any live key can mint more. See
   [minting a live key](/authentication#minting-a-live-key).
 - Your existing `ck_test_` keys are **still confined to sandbox merchants**. That is not a
   leftover restriction to work around — it is the point. Keep them for CI and staging.
 - Point production at a new `ck_live_` key. Nothing else in your integration changes.
-- Quotas still apply, and default to 5 concurrent / 200 per day. Tell us what you need and
-  they are raised per-account.
+- Quotas still apply: concurrency comes from your plan (Personal 1, Business 5, Scale 15),
+  daily volume defaults to 200 per 24 hours on every plan, and Personal caps a single
+  checkout at $200. See [Pricing](/pricing) — the daily cap is raisable per-account.
 
 <Tip>
 Because a test key stays confined forever, the safest production layout is: `ck_live_` in one

@@ -1,0 +1,95 @@
+---
+title: "Pricing"
+description: "A monthly platform fee plus $1.00 per completed checkout. Failed and cancelled checkouts are never billed, on any tier."
+---
+
+**You are billed when a checkout completes. A run that fails or is cancelled costs you
+nothing.** Not a metered event, not a line on the invoice — nothing. Metering attempts would
+mean we earn more when the agent fails, which is exactly backwards for a product whose entire
+problem is reliability. Our unreliability is our cost, not yours.
+
+That is the whole model. Everything below is the numbers.
+
+## The plans
+
+|  | Sandbox | Personal | Business | Scale |
+| --- | --- | --- | --- | --- |
+| Platform fee | $0 | $9 / month | $49 / month | $249 / month |
+| Per completed checkout | free | $1.00 | $1.00 | $1.00 |
+| Real merchants | no | yes | yes | yes |
+| Concurrent checkouts | 5 | 1 | 5 | 15 |
+| Per-checkout spend ceiling | — | $200 | none | none |
+| Card required | no | yes | yes | yes |
+
+Sandbox is where every workspace starts: free, no card on file, and the entire product —
+real browser, real storefront, real card entry, a genuinely placed order — against the
+store we control. See [Sandbox](/sandbox). The standard quotas (5 concurrent, 200 checkouts
+per rolling 24 hours) apply there like everywhere else.
+
+The paid plans exist to reach real merchants. Moving to one is self-serve — see
+[Going live](/going-live).
+
+## The meter
+
+- **$1.00 per completed checkout, flat, on every paid tier.** Not a percentage of the order.
+  A $12 order and a $900 order cost the same to run. The order totals your agents actually
+  spent are reported per currency in [`GET /v1/usage`](/api-reference/usage) — reporting
+  only, never billed against.
+- **`succeeded` is the only status that meters.** `failed` and `cancelled` never do —
+  whatever the reason: the agent lost its way, the merchant broke, you declined a card
+  prompt, an action expired, you `DELETE`d the run.
+- **Usage lands on the same subscription as the platform fee.** One Stripe subscription, one
+  invoice — the monthly fee plus the month's completed checkouts.
+- **A checkout is metered once.** Deduplication is by checkout id, so an internal retry or
+  replay cannot bill the same checkout twice.
+
+<Note>
+The meter counts completed checkouts on the **workspace**, not on the key. On a paid
+workspace, a completed run against the sandbox store on a `ck_test_` key is metered like any
+other. Sandbox-store runs are only unmetered while the workspace itself is on the free
+sandbox plan.
+</Note>
+
+## What the tiers change
+
+Capacity, and only capacity.
+
+<ResponseField name="Concurrent checkouts" type="1 / 5 / 15">
+  How many non-terminal checkouts the workspace may hold at once — each one is a real
+  browser. Exceeding it is a `429` at `POST /v1/checkouts`. See
+  [Quotas](/errors-and-limits#quotas).
+</ResponseField>
+
+<ResponseField name="Per-checkout spend ceiling" type="Personal: $200. Business and Scale: none.">
+  On Personal, a single checkout may not spend more than $200. Omit
+  `constraints.maxCost` and the ceiling is applied as your `maxCost`; ask for more and the
+  create is **refused, not clamped** — silently weakening an instruction about money is worse
+  than rejecting it. See
+  [the plan ceiling](/errors-and-limits#the-plan-ceiling).
+</ResponseField>
+
+Daily volume is not a tier: every workspace defaults to 200 checkouts per rolling 24 hours,
+raisable per workspace — ask, with a sense of your volume.
+
+## What the tiers do not change
+
+Features. Every capability the API has is on every tier, sandbox included:
+
+- [Scopes](/authentication#scopes) and [end-user isolation](/end-user-isolation) — the
+  safety rails an agent platform needs are not an upsell.
+- [Webhooks](/webhooks), [live view](/live-view), [buyer profiles](/buyer-profiles),
+  [buyer sessions](/buyer-sessions), [usage reporting](/api-reference/usage).
+- Both engines, chosen per run, the same way for everyone.
+
+If a tier ever gated a safety feature, the cheapest workspaces would be the least safe ones,
+which is the wrong workspaces to make unsafe.
+
+## Subscribing and managing the subscription
+
+Both happen from your dashboard's billing page at `app.farthing.ai`. Choosing a plan opens
+Stripe Checkout; card, invoices, plan changes and cancellation are handled in Stripe's
+billing portal, reached from the same page. Farthing never sees your card.
+
+If the subscription ends, the workspace reverts to sandbox — data and test keys keep
+working, live checkouts stop. See
+[what happens when a subscription ends](/going-live#if-the-subscription-ends).

@@ -11,6 +11,7 @@ A machine-readable OpenAPI 3.1 description of every /v1 endpoint lives at openap
 - Branch on pendingUserAction.key. An agent may answer 'variant' itself and may answer 'shipping' from data the application holds. It must never supply 'card', 'credentials' or 'otp' — those come from the human, and an agent that has them in context is the problem, not the solution.
 - Base URL is https://api.farthing.ai and auth is Authorization: Bearer ck_test_... or ck_live_.... API keys carry scopes; give an agent the narrowest set that does its job. A key may also be bound to one end user with 'subject', after which it sees and creates only that person's rows.
 - POST /v1/checkouts takes an Idempotency-Key header. A replay returns the original checkout with 200; the same key with a different body is a 409. Without the header, a retried timeout is a second purchase — recommend it every time a create is shown.
+- Pricing: sandbox is free with no card; paid plans are Personal $9, Business $49, Scale $249 per month, plus a flat $1.00 per COMPLETED checkout on every tier. Failed and cancelled checkouts are never billed. Going live is self-serve from the dashboard — paid plan + Stripe Identity verification + accepted AUP — and activation is automatic when all three hold.
 - Every example in these docs is a shape the API actually produces. Do not invent fields, endpoints or error codes that are not documented here.
 
 
@@ -55,9 +56,10 @@ page they would.
 Stated outright, because it changes where you should be reading.
 
 Everything Farthing does happens over HTTP. There is no required SDK, no widget to embed,
-no client library you have to wait for. The **web dashboard exists for billing and for issuing
-API keys** — and, when you want it, for watching a run go past. It is not where the work
-happens, and no capability lives there that the API does not have.
+no client library you have to wait for. The **web dashboard exists for
+[billing](/pricing) and for issuing API keys** — and, when you want it, for watching a run
+go past. It is not where the work happens, and no capability lives there that the API does
+not have.
 
 That shape is deliberate. The integrator we design for is a process, not a person clicking
 through a console: it authenticates with a scoped bearer token, drives the whole lifecycle
@@ -156,6 +158,109 @@ milliseconds, and build your UI around the `progressItems` stream rather than a 
 #### Wiring up an agent
     Tool definitions, the loop, and which questions a model may answer for itself.
 
+  
+#### What it costs
+    A monthly platform fee plus $1.00 per completed checkout. Failed and cancelled runs are
+    never billed.
+
+  
+#### Going live
+    Plan, identity, AUP — three self-serve facts, and the workspace activates itself.
+
+------------------------------------------------------------------------------
+# Pricing
+Source: https://docs.farthing.ai/pricing
+Summary: A monthly platform fee plus $1.00 per completed checkout. Failed and cancelled checkouts are never billed, on any tier.
+------------------------------------------------------------------------------
+
+**You are billed when a checkout completes. A run that fails or is cancelled costs you
+nothing.** Not a metered event, not a line on the invoice — nothing. Metering attempts would
+mean we earn more when the agent fails, which is exactly backwards for a product whose entire
+problem is reliability. Our unreliability is our cost, not yours.
+
+That is the whole model. Everything below is the numbers.
+
+## The plans
+
+|  | Sandbox | Personal | Business | Scale |
+| --- | --- | --- | --- | --- |
+| Platform fee | $0 | $9 / month | $49 / month | $249 / month |
+| Per completed checkout | free | $1.00 | $1.00 | $1.00 |
+| Real merchants | no | yes | yes | yes |
+| Concurrent checkouts | 5 | 1 | 5 | 15 |
+| Per-checkout spend ceiling | — | $200 | none | none |
+| Card required | no | yes | yes | yes |
+
+Sandbox is where every workspace starts: free, no card on file, and the entire product —
+real browser, real storefront, real card entry, a genuinely placed order — against the
+store we control. See [Sandbox](/sandbox). The standard quotas (5 concurrent, 200 checkouts
+per rolling 24 hours) apply there like everywhere else.
+
+The paid plans exist to reach real merchants. Moving to one is self-serve — see
+[Going live](/going-live).
+
+## The meter
+
+- **$1.00 per completed checkout, flat, on every paid tier.** Not a percentage of the order.
+  A $12 order and a $900 order cost the same to run. The order totals your agents actually
+  spent are reported per currency in [`GET /v1/usage`](/api-reference/usage) — reporting
+  only, never billed against.
+- **`succeeded` is the only status that meters.** `failed` and `cancelled` never do —
+  whatever the reason: the agent lost its way, the merchant broke, you declined a card
+  prompt, an action expired, you `DELETE`d the run.
+- **Usage lands on the same subscription as the platform fee.** One Stripe subscription, one
+  invoice — the monthly fee plus the month's completed checkouts.
+- **A checkout is metered once.** Deduplication is by checkout id, so an internal retry or
+  replay cannot bill the same checkout twice.
+
+NOTE:
+The meter counts completed checkouts on the **workspace**, not on the key. On a paid
+workspace, a completed run against the sandbox store on a `ck_test_` key is metered like any
+other. Sandbox-store runs are only unmetered while the workspace itself is on the free
+sandbox plan.
+
+## What the tiers change
+
+Capacity, and only capacity.
+
+- **Concurrent checkouts** (1 / 5 / 15):
+  How many non-terminal checkouts the workspace may hold at once — each one is a real
+  browser. Exceeding it is a `429` at `POST /v1/checkouts`. See
+  [Quotas](/errors-and-limits#quotas).
+
+- **Per-checkout spend ceiling** (Personal: $200. Business and Scale: none.):
+  On Personal, a single checkout may not spend more than $200. Omit
+  `constraints.maxCost` and the ceiling is applied as your `maxCost`; ask for more and the
+  create is **refused, not clamped** — silently weakening an instruction about money is worse
+  than rejecting it. See
+  [the plan ceiling](/errors-and-limits#the-plan-ceiling).
+
+Daily volume is not a tier: every workspace defaults to 200 checkouts per rolling 24 hours,
+raisable per workspace — ask, with a sense of your volume.
+
+## What the tiers do not change
+
+Features. Every capability the API has is on every tier, sandbox included:
+
+- [Scopes](/authentication#scopes) and [end-user isolation](/end-user-isolation) — the
+  safety rails an agent platform needs are not an upsell.
+- [Webhooks](/webhooks), [live view](/live-view), [buyer profiles](/buyer-profiles),
+  [buyer sessions](/buyer-sessions), [usage reporting](/api-reference/usage).
+- Both engines, chosen per run, the same way for everyone.
+
+If a tier ever gated a safety feature, the cheapest workspaces would be the least safe ones,
+which is the wrong workspaces to make unsafe.
+
+## Subscribing and managing the subscription
+
+Both happen from your dashboard's billing page at `app.farthing.ai`. Choosing a plan opens
+Stripe Checkout; card, invoices, plan changes and cancellation are handled in Stripe's
+billing portal, reached from the same page. Farthing never sees your card.
+
+If the subscription ends, the workspace reverts to sandbox — data and test keys keep
+working, live checkouts stop. See
+[what happens when a subscription ends](/going-live#if-the-subscription-ends).
+
 ------------------------------------------------------------------------------
 # Quickstart
 Source: https://docs.farthing.ai/quickstart
@@ -167,7 +272,9 @@ variant question, answer a card question, read the receipt.
 
 A self-serve signup gets you a **sandbox** tenant. It is the real engine against a store we
 control — a genuinely placed order, a real variant prompt, real card entry — with no path
-to a real merchant. See [Sandbox](/sandbox) for what changes when you go live.
+to a real merchant. The sandbox is free with no card on file; see
+[Sandbox](/sandbox) for what confinement means, and [Going live](/going-live) and
+[Pricing](/pricing) for when you are ready to spend real money.
 
 NOTE:
 The API base URL is `https://api.farthing.ai`. Every authenticated call takes
@@ -639,8 +746,8 @@ main().catch((e) => {
     Stop polling. Signature verification included.
 
   
-#### Sandbox
-    What a sandbox tenant can and cannot do, and how to go live.
+#### Going live
+    What a sandbox tenant cannot do, and the three self-serve facts that lift it.
 
 ------------------------------------------------------------------------------
 # Use Farthing from an LLM agent
@@ -1311,7 +1418,7 @@ run from a chat window.
 ------------------------------------------------------------------------------
 # Authentication
 Source: https://docs.farthing.ai/authentication
-Summary: Bearer API keys, the scopes they carry, how they are stored, how to rotate them, and what key mode actually controls.
+Summary: Bearer API keys, the scopes they carry, how they are stored, what key mode actually controls — and the dashboard session, the credential humans hold.
 ------------------------------------------------------------------------------
 
 Every call to `/v1/*` except `POST /v1/signup` requires a bearer token:
@@ -1321,9 +1428,13 @@ curl https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
 ```
 
-There is no other auth scheme. No query-string keys, no HMAC request signing, no OAuth. The
-one exception is the live-view embed, which is gated by a separate short-lived JWT rather
-than your API key — see [Live view](/live-view).
+Two credentials arrive on that header: **API keys**, which this page is mostly about, and
+**[dashboard sessions](#dashboard-sessions)** — the short-lived token a signed-in human
+holds at `app.farthing.ai`. Keys are for agents; sessions are for the person in the
+dashboard, and your integration never handles one. There is no third scheme — no
+query-string keys, no HMAC request signing, no OAuth. The one exception is the live-view
+embed, which is gated by a separate short-lived JWT rather than your API key — see
+[Live view](/live-view).
 
 ## Key format
 
@@ -1363,12 +1474,17 @@ buyer-sessions.read   buyer-sessions.write
 webhooks.read         webhooks.write
 api-keys.read         api-keys.write
 usage.read            usage.write
+billing.read          billing.write
 *
 ```
 
 The resources are exactly the route groups mounted under `/v1`, so the boundary you reason
 about — "this key may read checkouts and nothing else" — is the same boundary the code
 enforces. There is no mapping table in between to fall out of date.
+
+The `billing.*` scopes exist because the route group does, but they buy a key nothing:
+`/v1/billing` refuses API keys outright, whatever their scopes — see
+[dashboard sessions](#dashboard-sessions).
 
 ### The three rules
 
@@ -1417,9 +1533,9 @@ remembering.
 `requiredScope` is there so you never have to parse the message.
 
 NOTE:
-An unrecognised resource is denied, not allowed. A path under `/v1` that is not one of the six
-resources returns `404 Unknown resource` — a new route group is unreachable until it is named
-in the scope list, which is the failure direction you want.
+An unrecognised resource is denied, not allowed. A path under `/v1` that is not one of the
+seven resources returns `404 Unknown resource` — a new route group is unreachable until it is
+named in the scope list, which is the failure direction you want.
 
 ### Why this matters more for agents
 
@@ -1603,6 +1719,10 @@ narrowing.
 With an activated account and a live key in hand, `{"mode":"live"}` works, and only then can any of
 its keys reach a real merchant.
 
+Where the first live key comes from: the dashboard. A [dashboard session](#dashboard-sessions)
+on an activated workspace counts as a live-mode credential, so the workspace owner mints the
+first `ck_live_` key there — see [Going live](/going-live#your-first-live-key).
+
 TIP:
 This gives you a genuinely spend-proof credential for CI, staging, and anything running
 unattended: issue a `test` key. It exercises the entire product — real browser, real
@@ -1614,23 +1734,62 @@ Mode, scopes and `subject` are all fixed at creation. There is no way to promote
 `live`, no way to re-scope a key, and no way to rebind or unbind one — create a new one and
 revoke the old one.
 
+## Dashboard sessions
+
+The second credential, stated briefly because an integration never touches it.
+
+When you are signed in at `app.farthing.ai`, your browser holds a short-lived session token
+(a Clerk JWT, expiring in about a minute), and the dashboard calls this same API with it —
+same `Authorization: Bearer` header, dispatched by shape: a session token is a JWT, a key
+starts with `ck_`, and neither can be mistaken for the other.
+
+What a session gets:
+
+- **Your workspace, from membership** — never from anything the request claims. It acts as
+  the owner: full scopes, no `subject` binding, and key mode follows the workspace's state —
+  a sandbox workspace's session behaves like a test key, an activated one like a live key.
+- **The session-only surface.** `/v1/workspaces` (provisioning) and `/v1/billing` (plan,
+  identity verification, AUP) refuse API keys with `401`. Money and membership are decisions
+  the accountable human makes in a browser — and refusing keys there means a leaked agent
+  key cannot re-plan, de-verify, or re-terms a workspace.
+
+What a session cannot do: exist outside Clerk. There is no endpoint that mints one and no
+way to derive one from a key, so the session-only surface is unreachable to any credential
+you could leak into an agent.
+
+One session-specific refusal to know: a valid session whose account has no workspace yet
+gets `403` on `/v1/*` with a machine-readable marker —
+
+```json 403
+{ "error": true, "message": "No workspace for this account", "code": "no_workspace" }
+```
+
+— and the same `code` with `404` on `GET /v1/workspaces/me`. `POST /v1/workspaces` is the
+fix. The dashboard keys its onboarding off that code; nothing agent-facing ever produces it.
+
 ## Auth failures
 
 | Status | Body `message` | Cause |
 | --- | --- | --- |
 | `401` | `Missing bearer token` | No `Authorization` header, or it does not match `Bearer <token>`. |
 | `401` | `Invalid or revoked API key` | The token's hash matches no active key row. |
-| `403` | `Tenant suspended` | The key is valid but the tenant has `suspended_at` set. Contact us. |
+| `401` | `Invalid session token: …` | A [dashboard session](#dashboard-sessions) that failed verification — expired, wrong issuer, minted for another application. |
+| `401` | `… requires a dashboard session, not an API key` | An API key on the session-only surface: `/v1/workspaces` or `/v1/billing`. |
+| `403` | `Tenant suspended` | The credential is valid but the tenant has `suspended_at` set. Contact us. |
 | `403` | `This API key is missing the '<scope>' scope.` | The key authenticated but is not scoped for this route. Carries `requiredScope`. |
 | `403` | `A subject-bound key cannot …` | The key is [bound to one end user](/end-user-isolation) and asked for an account-wide fact: the key list, usage, or webhooks. |
-| `404` | `Unknown resource` | A path under `/v1` that is not one of the six scoped resources. |
+| `403` | `No workspace for this account` | A valid session with no workspace yet. Carries `code: "no_workspace"`. |
+| `404` | `Unknown resource` | A path under `/v1` that is not one of the seven scoped resources. |
 
 They all come back as `{ "error": true, "message": "..." }`. There is no distinction in the
 401 between "never existed" and "revoked" — deliberately, since that difference is only
 useful to someone probing.
 
-Note the ordering: authentication runs first, then scope. A revoked key gets `401` whatever it
-was asking for; a valid but narrow key gets `403` with the scope named.
+Note the ordering: authentication runs first, then scope, then any route-specific check. A
+revoked key gets `401` whatever it was asking for; a valid but narrow key gets `403` with the
+scope named. One consequence on `/v1/billing`: a key without `billing.*` scopes gets the
+scope `403` first, while a full-access key reaches the session-only check and gets its `401`
+— either way, no API key gets in.
 
 NOTE:
 `lastUsedAt` is written best-effort on every authenticated request and never blocks it. Treat
@@ -3816,32 +3975,193 @@ Two things have to be true: the account must be activated, and the request must 
 
 ### Activating the account
 
-There is no self-serve activation, and that is deliberate. Flipping an account out of
-sandbox-only means it becomes *able* to spend real money at real merchants, which is not a
-button we are willing to put behind a form.
+Activation is self-serve, from the dashboard at `app.farthing.ai`, and fully automated: hold
+a [paid plan](/pricing), verify your identity through Stripe, accept the AUP, and the
+workspace flips to live the moment all three are true. No approval queue. The whole journey
+is on [Going live](/going-live).
 
-Get in touch. What we need to know is roughly: who the buyers are, which merchants you expect
-to target, what card instruments you will use, and what your volume looks like.
+One thing to know before you start: activation is driven from a **dashboard workspace**. A
+tenant created with the curl-only `POST /v1/signup` below has no dashboard account attached
+and cannot be activated — sign up at the dashboard when you intend to go live.
 
 ### After activation
 
 - `sandboxOnly` is false, so the account-level refusal on `POST /v1/api-keys` with
   `{"mode":"live"}` is gone.
-- **Ask us for your first `ck_live_` key while you are arranging activation.** A `ck_test_` key
-  cannot issue a live one — authority passes down, never sideways — and every key a self-serve
-  signup has is a test key, so that first live credential has to come from us. After that you can
-  mint as many live keys as you like from it. See
+- **Mint your first `ck_live_` key from the dashboard.** A `ck_test_` key still cannot issue
+  a live one — authority passes down, never sideways — but the dashboard session of an
+  activated workspace counts as a live credential, and any live key can mint more. See
   [minting a live key](/authentication#minting-a-live-key).
 - Your existing `ck_test_` keys are **still confined to sandbox merchants**. That is not a
   leftover restriction to work around — it is the point. Keep them for CI and staging.
 - Point production at a new `ck_live_` key. Nothing else in your integration changes.
-- Quotas still apply, and default to 5 concurrent / 200 per day. Tell us what you need and
-  they are raised per-account.
+- Quotas still apply: concurrency comes from your plan (Personal 1, Business 5, Scale 15),
+  daily volume defaults to 200 per 24 hours on every plan, and Personal caps a single
+  checkout at $200. See [Pricing](/pricing) — the daily cap is raisable per-account.
 
 TIP:
 Because a test key stays confined forever, the safest production layout is: `ck_live_` in one
 place only — the deployed service that is supposed to buy things — and `ck_test_` everywhere
 else. A leaked or misconfigured test key cannot cost anyone money.
+
+------------------------------------------------------------------------------
+# Going live
+Source: https://docs.farthing.ai/going-live
+Summary: Three self-serve facts — a paid plan, a verified identity, an accepted AUP — and the workspace activates itself. No approval queue.
+------------------------------------------------------------------------------
+
+A workspace starts in the sandbox and stays there until three facts hold:
+
+1. **A paid plan is active** — [Personal, Business or Scale](/pricing), via Stripe Checkout.
+2. **A human has verified their identity** — Stripe Identity's hosted flow: a government ID
+   document plus a matching selfie.
+3. **The acceptable-use policy is accepted** — recorded as a timestamp, not a checkbox that
+   evaporates.
+
+Complete them in any order, all self-serve from your dashboard's billing page. The moment
+the third one lands, the workspace activates — automatically, with no approval queue and no
+human in the loop. The trade for no queue is that fresh live workspaces start with their
+plan's caps applied: concurrency and, on Personal, the
+[$200 per-checkout ceiling](/errors-and-limits#the-plan-ceiling).
+
+## Where you start
+
+Sign up at `app.farthing.ai`. That creates your workspace — sandbox plan, one per account —
+and mints its first `ck_test_` key, shown exactly once like every key this platform issues.
+Everything on the API works from that moment against the sandbox store; nothing about going
+live is a prerequisite for building.
+
+NOTE:
+A tenant created with the curl-only [`POST /v1/signup`](/sandbox#signing-up) has no
+dashboard account attached, and there is no way to attach one later — so it can never be
+activated. If you started there and want to go live, sign up at the dashboard and move your
+integration to the workspace it creates (buyer profiles and webhooks are quick to recreate;
+keys are per-tenant anyway).
+
+## The three facts
+
+### Choose a plan
+
+From the billing page, pick a plan and pay through Stripe Checkout. The subscription that
+creates carries both the platform fee and the
+[$1.00-per-completed-checkout meter](/pricing#the-meter) — one subscription, one invoice.
+
+### Verify identity
+
+The billing page hands you off to Stripe Identity's hosted flow: photograph a government ID
+document, take a selfie, and Stripe checks that they match.
+
+Two things worth stating plainly:
+
+- **Your ID documents are held by Stripe, never by Farthing.** We never receive, store or
+  proxy the images — we learn only the verdict. That keeps an entire class of PII off this
+  platform, which is better for you than any promise we could make about how carefully we
+  would store it.
+- **A failed check is retryable.** Verification sits at `pending` until Stripe reaches a
+  verdict; a blurry photo or a cut-off document sends it back to `pending`, not to a
+  rejection — a typo'd document is not fraud. Try again from the same page.
+
+Why identity verification at all: activation makes a workspace able to spend real money at
+real merchants with no human reviewing it first. An accountable, verified human behind every
+live workspace is what makes that automation defensible.
+
+### Accept the AUP
+
+One click on the billing page, recorded with a timestamp. This is often the last of the
+three facts, so it is the moment many workspaces go live — the response tells you
+immediately:
+
+```json
+{ "accepted": true, "activation": "activated" }
+```
+
+`activation` is `"not_ready"` when other facts are still missing, and `"already_live"` if
+the workspace was activated earlier.
+
+## Watching the checklist
+
+The dashboard renders the road to live from `GET /v1/billing`, which names exactly what is
+still missing in `remaining`:
+
+```json Before — sandbox workspace, nothing done yet
+{
+  "plan": "sandbox",
+  "live": false,
+  "verificationStatus": "unverified",
+  "aupAcceptedAt": null,
+  "hasSubscription": false,
+  "limits": { "concurrentCheckouts": null, "maxCheckoutCostUsd": null },
+  "remaining": ["choose_plan", "verify_identity", "accept_aup"]
+}
+```
+
+```json After — live on Personal
+{
+  "plan": "personal",
+  "live": true,
+  "verificationStatus": "verified",
+  "aupAcceptedAt": "2026-08-01T10:22:41.055Z",
+  "hasSubscription": true,
+  "limits": { "concurrentCheckouts": 1, "maxCheckoutCostUsd": "200" },
+  "remaining": []
+}
+```
+
+`limits` are `null` until activation applies the plan's numbers (the
+[defaults](/errors-and-limits#quotas) hold in the meantime), and `maxCheckoutCostUsd` is a
+decimal string like every money amount on this API — `null` on plans without a ceiling.
+
+Because payment and verification are confirmed to us asynchronously by Stripe, the last fact
+can land a short while after you finish the flow — refresh the checklist rather than
+assuming the redirect back to the dashboard means it is done.
+
+## Your first live key
+
+Mint it from the dashboard once the workspace is live. A dashboard session on an activated
+workspace is a live-mode credential, so it can create `ck_live_` keys.
+
+What has **not** changed:
+
+- **A test key still cannot become or mint a live key.** That refusal predates activation
+  being self-serve and it stays — authority passes down, never sideways. See
+  [minting a live key](/authentication#minting-a-live-key).
+- **Your existing `ck_test_` keys stay confined to the sandbox store forever.** Keep them
+  for CI and staging; a leaked test key still cannot spend money. See
+  [Sandbox](/sandbox#two-independent-triggers).
+
+Point production at the new `ck_live_` key. Nothing else in your integration changes.
+
+## If the subscription ends
+
+The workspace reverts to sandbox. Deliberately **not** suspension:
+
+- Your data — checkouts, buyer profiles, webhooks, keys — stays where it is.
+- Test keys and the dashboard keep working.
+- Live checkouts stop, because live requires a paid plan. Live keys still authenticate; they
+  are simply confined to the sandbox store like everything else on a sandbox workspace.
+
+Identity verification and the AUP acceptance persist, so coming back is just choosing a plan
+again — the workspace re-activates automatically when the payment confirms.
+
+Suspension is a separate mechanism, reserved for abuse, where everything stops — every key
+answers `403 Tenant suspended`.
+
+## The endpoints under all this
+
+The dashboard drives ordinary API routes; there is no hidden admin surface. All of them are
+**session-only** — an API key is refused with `401`, because plans, identity and terms are
+decisions the accountable human makes in a browser, and a leaked agent key must not be able
+to make them. See [dashboard sessions](/authentication#dashboard-sessions).
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces/me` | The caller's workspace, or `404` with `code: "no_workspace"`. |
+| `POST` | `/v1/workspaces` | Create the workspace (one per account) and its first test key. |
+| `GET` | `/v1/billing` | Plan, live status, limits, and the `remaining` checklist. |
+| `POST` | `/v1/billing/checkout-session` | Start a subscription — returns a Stripe Checkout URL. |
+| `POST` | `/v1/billing/portal-session` | Manage card, invoices, cancellation — returns a Stripe portal URL. |
+| `POST` | `/v1/billing/verification-session` | Start identity verification — returns a Stripe Identity URL. |
+| `POST` | `/v1/billing/accept-aup` | Record AUP acceptance; runs the activation gate. |
 
 ------------------------------------------------------------------------------
 # Errors and limits
@@ -3875,8 +4195,11 @@ field:
 }
 ```
 
-There are no error codes. Match on the HTTP status; treat `message` as text for a human, and
-`issues[].path` as the machine-readable part when it is present.
+There are no error codes on the agent-facing surface. Match on the HTTP status; treat
+`message` as text for a human, and `issues[].path` as the machine-readable part when it is
+present. (The session-only workspace routes are the exception: they add a `code` field —
+`no_workspace`, `workspace_exists` — for the dashboard to key its onboarding off. See
+[dashboard sessions](/authentication#dashboard-sessions).)
 
 One error carries an extra machine-readable field. A sandbox confinement `403` includes the
 hosts you *can* reach, so you never have to parse the message:
@@ -3919,6 +4242,19 @@ Three others carry a machine-readable field, all to do with
 }
 ```
 
+One more on `POST /v1/checkouts`, when your `maxCost` asks for more than your plan allows —
+`planCeilingUsd` carries the ceiling, so you can cap and retry without parsing the message:
+
+```json 400 — maxCost above the plan's per-checkout ceiling
+{
+  "error": true,
+  "message": "maxCost 250.00 exceeds this plan's per-checkout ceiling of $200.00.",
+  "planCeilingUsd": 200
+}
+```
+
+See [the plan ceiling](#the-plan-ceiling) for the semantics — refused, never clamped.
+
 And one more, on an [idempotency](#idempotency) conflict — `checkoutId` names the checkout the
 key already refers to:
 
@@ -3942,11 +4278,11 @@ they are consumed by a browser, not an API client.
 | `200` | Successful read, successful action submit, successful revoke/delete. Also an [idempotent replay](#idempotency) of `POST /v1/checkouts`. |
 | `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
-| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user. |
-| `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed. |
+| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user; a `maxCost` above [your plan's per-checkout ceiling](#the-plan-ceiling). |
+| `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. Also an API key on the session-only surface (`/v1/workspaces`, `/v1/billing`) — see [dashboard sessions](/authentication#dashboard-sessions). |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed; a dashboard session with no workspace yet (`code: "no_workspace"`). |
 | `404` | Not found, or owned by another tenant — or by another end user. None of the three are distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
-| `409` | The action you are answering is already `submitted`, `declined` or `expired`; or an `Idempotency-Key` was reused with a different body. |
+| `409` | The action you are answering is already `submitted`, `declined` or `expired`; an `Idempotency-Key` was reused with a different body; or a second workspace for an account that has one (`code: "workspace_exists"`). |
 | `429` | A quota was hit. See below. |
 
 ### The 404s
@@ -4083,10 +4419,14 @@ Two independent per-tenant limits, both enforced at `POST /v1/checkouts`, both r
 slot, so one end user's parked runs can `429` another's next create. See
 [what isolation does not cover](/end-user-isolation#what-isolation-does-not-cover).
 
-- **Active checkouts** (5 concurrent (default)):
+- **Active checkouts** (set by your plan):
   ```json
   { "error": true, "message": "Active checkout limit reached (5). Wait for runs to finish or cancel them." }
   ```
+
+  The number in the message is your limit. Sandbox workspaces default to **5** concurrent;
+  activation applies the plan's number — **Personal 1, Business 5, Scale 15**. See
+  [Pricing](/pricing#what-the-tiers-change).
 
   "Active" means any checkout not in `succeeded`, `failed` or `cancelled` — including
   `queued` and including one parked on a user action.
@@ -4101,7 +4441,8 @@ slot, so one end user's parked runs can `429` another's next create. See
   ```
 
   A rolling 24-hour window over creation time, not a calendar day. It is a velocity brake: an
-  agentic checkout platform without one is a card-testing tool waiting to be discovered.
+  agentic checkout platform without one is a card-testing tool waiting to be discovered. The
+  default is the same on every plan.
 
 Both are raisable per tenant — ask, with a sense of your volume. Neither limit sends a
 `Retry-After` header; for the concurrency limit, retry when one of your own runs finishes.
@@ -4160,8 +4501,35 @@ with their own limit. Second, you are the last check — you can always inspect 
 before answering a `card` action, and `decline` if the run's timeline does not look like what
 you asked for.
 
-Omitting `maxCost` means no cost enforcement at all. For anything touching a real merchant,
-set it.
+Omitting `maxCost` means no cost enforcement at all — unless your plan has a ceiling, in
+which case the ceiling steps in. For anything touching a real merchant, set it.
+
+### The plan ceiling
+
+On plans with a per-checkout spend ceiling — [Personal, at $200](/pricing#what-the-tiers-change)
+— the ceiling is enforced at `POST /v1/checkouts`, before anything runs:
+
+- **Omit `constraints.maxCost`** and the ceiling is applied *as* your `maxCost`
+  (`{"amount": "200.00", "currency": "USD"}`), enforced by the same two checks above.
+- **Ask for more than the ceiling** and the create is refused with a `400` carrying
+  `planCeilingUsd`:
+
+  ```json 400
+  {
+    "error": true,
+    "message": "maxCost 250.00 exceeds this plan's per-checkout ceiling of $200.00.",
+    "planCeilingUsd": 200
+  }
+  ```
+
+Refused, **not clamped**: silently weakening an instruction about money is worse than
+rejecting it. If the API quietly turned your `250.00` into `200.00`, a purchase could
+succeed under a constraint you never agreed to; a `400` at create time costs nothing and
+leaves the decision with you.
+
+The ceiling is a dollar figure, and the refusal compares USD amounts — a `maxCost` in
+another currency passes this gate and is enforced only by the ordinary `maxCost` checks
+above. Business and Scale have no ceiling; `maxCost` on those plans is entirely yours.
 
 ## Other input limits
 
@@ -4478,6 +4846,10 @@ surfaces do not:
 - `/embed/*` — gated by a short-lived embed JWT instead of an API key. See
   [Live view](/live-view).
 
+Two route groups take the *other* bearer credential: `/v1/workspaces` and `/v1/billing` are
+**session-only** — driven by the dashboard, refusing API keys with `401`. See
+[dashboard sessions](/authentication#dashboard-sessions).
+
 ## Conventions
 
 - **Content type** (application/json):
@@ -4510,7 +4882,8 @@ surfaces do not:
 
 - **Errors** ({ error: true, message }):
   Plus `issues` on validation failures, `requiredScope` on a scope refusal, `sandboxMerchants`
-  on sandbox confinement. See [Errors and limits](/errors-and-limits).
+  on sandbox confinement, `planCeilingUsd` when `maxCost` exceeds the plan's per-checkout
+  ceiling. See [Errors and limits](/errors-and-limits).
 
 - **Scopes** (<resource>.read | <resource>.write | *):
   Every route requires a scope derived from its path and method. `write` implies `read` on the
@@ -4618,6 +4991,28 @@ a minted JWT rather than an API key, and returns HTML and `text/event-stream`. S
 | Method | Path | Scope |
 | --- | --- | --- |
 | `GET` | `/v1/usage` | `usage.read` |
+
+### Workspaces (dashboard session only)
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces/me` | session |
+| `POST` | `/v1/workspaces` | session |
+
+### Billing (dashboard session only)
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `GET` | `/v1/billing` | session |
+| `POST` | `/v1/billing/checkout-session` | session |
+| `POST` | `/v1/billing/portal-session` | session |
+| `POST` | `/v1/billing/verification-session` | session |
+| `POST` | `/v1/billing/accept-aup` | session |
+
+These are the routes behind the dashboard's onboarding and billing pages — provisioning a
+workspace, choosing a plan, identity verification, the AUP, and the activation checklist. An
+API key on any of them is a `401`, whatever its scopes. The flow they implement is
+documented in [Going live](/going-live).
 
 ### Live view (embed-token auth)
 

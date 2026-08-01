@@ -1,0 +1,158 @@
+---
+title: "Going live"
+description: "Three self-serve facts — a paid plan, a verified identity, an accepted AUP — and the workspace activates itself. No approval queue."
+---
+
+A workspace starts in the sandbox and stays there until three facts hold:
+
+1. **A paid plan is active** — [Personal, Business or Scale](/pricing), via Stripe Checkout.
+2. **A human has verified their identity** — Stripe Identity's hosted flow: a government ID
+   document plus a matching selfie.
+3. **The acceptable-use policy is accepted** — recorded as a timestamp, not a checkbox that
+   evaporates.
+
+Complete them in any order, all self-serve from your dashboard's billing page. The moment
+the third one lands, the workspace activates — automatically, with no approval queue and no
+human in the loop. The trade for no queue is that fresh live workspaces start with their
+plan's caps applied: concurrency and, on Personal, the
+[$200 per-checkout ceiling](/errors-and-limits#the-plan-ceiling).
+
+## Where you start
+
+Sign up at `app.farthing.ai`. That creates your workspace — sandbox plan, one per account —
+and mints its first `ck_test_` key, shown exactly once like every key this platform issues.
+Everything on the API works from that moment against the sandbox store; nothing about going
+live is a prerequisite for building.
+
+<Note>
+A tenant created with the curl-only [`POST /v1/signup`](/sandbox#signing-up) has no
+dashboard account attached, and there is no way to attach one later — so it can never be
+activated. If you started there and want to go live, sign up at the dashboard and move your
+integration to the workspace it creates (buyer profiles and webhooks are quick to recreate;
+keys are per-tenant anyway).
+</Note>
+
+## The three facts
+
+### Choose a plan
+
+From the billing page, pick a plan and pay through Stripe Checkout. The subscription that
+creates carries both the platform fee and the
+[$1.00-per-completed-checkout meter](/pricing#the-meter) — one subscription, one invoice.
+
+### Verify identity
+
+The billing page hands you off to Stripe Identity's hosted flow: photograph a government ID
+document, take a selfie, and Stripe checks that they match.
+
+Two things worth stating plainly:
+
+- **Your ID documents are held by Stripe, never by Farthing.** We never receive, store or
+  proxy the images — we learn only the verdict. That keeps an entire class of PII off this
+  platform, which is better for you than any promise we could make about how carefully we
+  would store it.
+- **A failed check is retryable.** Verification sits at `pending` until Stripe reaches a
+  verdict; a blurry photo or a cut-off document sends it back to `pending`, not to a
+  rejection — a typo'd document is not fraud. Try again from the same page.
+
+Why identity verification at all: activation makes a workspace able to spend real money at
+real merchants with no human reviewing it first. An accountable, verified human behind every
+live workspace is what makes that automation defensible.
+
+### Accept the AUP
+
+One click on the billing page, recorded with a timestamp. This is often the last of the
+three facts, so it is the moment many workspaces go live — the response tells you
+immediately:
+
+```json
+{ "accepted": true, "activation": "activated" }
+```
+
+`activation` is `"not_ready"` when other facts are still missing, and `"already_live"` if
+the workspace was activated earlier.
+
+## Watching the checklist
+
+The dashboard renders the road to live from `GET /v1/billing`, which names exactly what is
+still missing in `remaining`:
+
+```json Before — sandbox workspace, nothing done yet
+{
+  "plan": "sandbox",
+  "live": false,
+  "verificationStatus": "unverified",
+  "aupAcceptedAt": null,
+  "hasSubscription": false,
+  "limits": { "concurrentCheckouts": null, "maxCheckoutCostUsd": null },
+  "remaining": ["choose_plan", "verify_identity", "accept_aup"]
+}
+```
+
+```json After — live on Personal
+{
+  "plan": "personal",
+  "live": true,
+  "verificationStatus": "verified",
+  "aupAcceptedAt": "2026-08-01T10:22:41.055Z",
+  "hasSubscription": true,
+  "limits": { "concurrentCheckouts": 1, "maxCheckoutCostUsd": "200" },
+  "remaining": []
+}
+```
+
+`limits` are `null` until activation applies the plan's numbers (the
+[defaults](/errors-and-limits#quotas) hold in the meantime), and `maxCheckoutCostUsd` is a
+decimal string like every money amount on this API — `null` on plans without a ceiling.
+
+Because payment and verification are confirmed to us asynchronously by Stripe, the last fact
+can land a short while after you finish the flow — refresh the checklist rather than
+assuming the redirect back to the dashboard means it is done.
+
+## Your first live key
+
+Mint it from the dashboard once the workspace is live. A dashboard session on an activated
+workspace is a live-mode credential, so it can create `ck_live_` keys.
+
+What has **not** changed:
+
+- **A test key still cannot become or mint a live key.** That refusal predates activation
+  being self-serve and it stays — authority passes down, never sideways. See
+  [minting a live key](/authentication#minting-a-live-key).
+- **Your existing `ck_test_` keys stay confined to the sandbox store forever.** Keep them
+  for CI and staging; a leaked test key still cannot spend money. See
+  [Sandbox](/sandbox#two-independent-triggers).
+
+Point production at the new `ck_live_` key. Nothing else in your integration changes.
+
+## If the subscription ends
+
+The workspace reverts to sandbox. Deliberately **not** suspension:
+
+- Your data — checkouts, buyer profiles, webhooks, keys — stays where it is.
+- Test keys and the dashboard keep working.
+- Live checkouts stop, because live requires a paid plan. Live keys still authenticate; they
+  are simply confined to the sandbox store like everything else on a sandbox workspace.
+
+Identity verification and the AUP acceptance persist, so coming back is just choosing a plan
+again — the workspace re-activates automatically when the payment confirms.
+
+Suspension is a separate mechanism, reserved for abuse, where everything stops — every key
+answers `403 Tenant suspended`.
+
+## The endpoints under all this
+
+The dashboard drives ordinary API routes; there is no hidden admin surface. All of them are
+**session-only** — an API key is refused with `401`, because plans, identity and terms are
+decisions the accountable human makes in a browser, and a leaked agent key must not be able
+to make them. See [dashboard sessions](/authentication#dashboard-sessions).
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces/me` | The caller's workspace, or `404` with `code: "no_workspace"`. |
+| `POST` | `/v1/workspaces` | Create the workspace (one per account) and its first test key. |
+| `GET` | `/v1/billing` | Plan, live status, limits, and the `remaining` checklist. |
+| `POST` | `/v1/billing/checkout-session` | Start a subscription — returns a Stripe Checkout URL. |
+| `POST` | `/v1/billing/portal-session` | Manage card, invoices, cancellation — returns a Stripe portal URL. |
+| `POST` | `/v1/billing/verification-session` | Start identity verification — returns a Stripe Identity URL. |
+| `POST` | `/v1/billing/accept-aup` | Record AUP acceptance; runs the activation gate. |

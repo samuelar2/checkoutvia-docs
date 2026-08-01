@@ -29,8 +29,11 @@ field:
 }
 ```
 
-There are no error codes. Match on the HTTP status; treat `message` as text for a human, and
-`issues[].path` as the machine-readable part when it is present.
+There are no error codes on the agent-facing surface. Match on the HTTP status; treat
+`message` as text for a human, and `issues[].path` as the machine-readable part when it is
+present. (The session-only workspace routes are the exception: they add a `code` field —
+`no_workspace`, `workspace_exists` — for the dashboard to key its onboarding off. See
+[dashboard sessions](/authentication#dashboard-sessions).)
 
 One error carries an extra machine-readable field. A sandbox confinement `403` includes the
 hosts you *can* reach, so you never have to parse the message:
@@ -73,6 +76,19 @@ Three others carry a machine-readable field, all to do with
 }
 ```
 
+One more on `POST /v1/checkouts`, when your `maxCost` asks for more than your plan allows —
+`planCeilingUsd` carries the ceiling, so you can cap and retry without parsing the message:
+
+```json 400 — maxCost above the plan's per-checkout ceiling
+{
+  "error": true,
+  "message": "maxCost 250.00 exceeds this plan's per-checkout ceiling of $200.00.",
+  "planCeilingUsd": 200
+}
+```
+
+See [the plan ceiling](#the-plan-ceiling) for the semantics — refused, never clamped.
+
 And one more, on an [idempotency](#idempotency) conflict — `checkoutId` names the checkout the
 key already refers to:
 
@@ -97,11 +113,11 @@ they are consumed by a browser, not an API client.
 | `200` | Successful read, successful action submit, successful revoke/delete. Also an [idempotent replay](#idempotency) of `POST /v1/checkouts`. |
 | `201` | Created: checkout, buyer profile, API key, webhook endpoint, signup. |
 | `202` | `DELETE /v1/checkouts/{id}`. Cancellation accepted, not yet applied. Empty body. |
-| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user. |
-| `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. |
-| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed. |
+| `400` | Malformed or invalid body; an unknown top-level field on a create body; unknown `status` filter; unparseable `from`/`to`; `buyerProfileId` that does not exist or, to a [subject-bound key](/end-user-isolation), belongs to another end user; a `maxCost` above [your plan's per-checkout ceiling](#the-plan-ceiling). |
+| `401` | Missing, malformed, invalid or revoked bearer token. Expired or mismatched embed token. Also an API key on the session-only surface (`/v1/workspaces`, `/v1/billing`) — see [dashboard sessions](/authentication#dashboard-sessions). |
+| `403` | Account suspended; missing scope; sandbox confinement; live-key request from a sandbox-only account or on a test key; a key trying to mint a broader key; a [subject-bound key](/end-user-isolation) reaching for an account-wide fact or another end user; a `buyerProfileId` belonging to a different end user than the checkout; signup closed; a dashboard session with no workspace yet (`code: "no_workspace"`). |
 | `404` | Not found, or owned by another tenant — or by another end user. None of the three are distinguished. Also `Unknown resource` for a path under `/v1` that is not a scoped resource. |
-| `409` | The action you are answering is already `submitted`, `declined` or `expired`; or an `Idempotency-Key` was reused with a different body. |
+| `409` | The action you are answering is already `submitted`, `declined` or `expired`; an `Idempotency-Key` was reused with a different body; or a second workspace for an account that has one (`code: "workspace_exists"`). |
 | `429` | A quota was hit. See below. |
 
 ### The 404s
@@ -241,10 +257,14 @@ Two independent per-tenant limits, both enforced at `POST /v1/checkouts`, both r
 slot, so one end user's parked runs can `429` another's next create. See
 [what isolation does not cover](/end-user-isolation#what-isolation-does-not-cover).
 
-<ResponseField name="Active checkouts" type="5 concurrent (default)">
+<ResponseField name="Active checkouts" type="set by your plan">
   ```json
   { "error": true, "message": "Active checkout limit reached (5). Wait for runs to finish or cancel them." }
   ```
+
+  The number in the message is your limit. Sandbox workspaces default to **5** concurrent;
+  activation applies the plan's number — **Personal 1, Business 5, Scale 15**. See
+  [Pricing](/pricing#what-the-tiers-change).
 
   "Active" means any checkout not in `succeeded`, `failed` or `cancelled` — including
   `queued` and including one parked on a user action.
@@ -260,7 +280,8 @@ slot, so one end user's parked runs can `429` another's next create. See
   ```
 
   A rolling 24-hour window over creation time, not a calendar day. It is a velocity brake: an
-  agentic checkout platform without one is a card-testing tool waiting to be discovered.
+  agentic checkout platform without one is a card-testing tool waiting to be discovered. The
+  default is the same on every plan.
 </ResponseField>
 
 Both are raisable per tenant — ask, with a sense of your volume. Neither limit sends a
@@ -322,8 +343,35 @@ before answering a `card` action, and `decline` if the run's timeline does not l
 you asked for.
 </Warning>
 
-Omitting `maxCost` means no cost enforcement at all. For anything touching a real merchant,
-set it.
+Omitting `maxCost` means no cost enforcement at all — unless your plan has a ceiling, in
+which case the ceiling steps in. For anything touching a real merchant, set it.
+
+### The plan ceiling
+
+On plans with a per-checkout spend ceiling — [Personal, at $200](/pricing#what-the-tiers-change)
+— the ceiling is enforced at `POST /v1/checkouts`, before anything runs:
+
+- **Omit `constraints.maxCost`** and the ceiling is applied *as* your `maxCost`
+  (`{"amount": "200.00", "currency": "USD"}`), enforced by the same two checks above.
+- **Ask for more than the ceiling** and the create is refused with a `400` carrying
+  `planCeilingUsd`:
+
+  ```json 400
+  {
+    "error": true,
+    "message": "maxCost 250.00 exceeds this plan's per-checkout ceiling of $200.00.",
+    "planCeilingUsd": 200
+  }
+  ```
+
+Refused, **not clamped**: silently weakening an instruction about money is worse than
+rejecting it. If the API quietly turned your `250.00` into `200.00`, a purchase could
+succeed under a constraint you never agreed to; a `400` at create time costs nothing and
+leaves the decision with you.
+
+The ceiling is a dollar figure, and the refusal compares USD amounts — a `maxCost` in
+another currency passes this gate and is enforced only by the ordinary `maxCost` checks
+above. Business and Scale have no ceiling; `maxCost` on those plans is entirely yours.
 
 ## Other input limits
 

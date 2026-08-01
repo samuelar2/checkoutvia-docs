@@ -16,6 +16,10 @@ surfaces do not:
 - `/embed/*` — gated by a short-lived embed JWT instead of an API key. See
   [Live view](/live-view).
 
+Two route groups take the *other* bearer credential: `/v1/workspaces` and `/v1/billing` are
+**session-only** — driven by the dashboard, refusing API keys with `401`. See
+[dashboard sessions](/authentication#dashboard-sessions).
+
 ## Conventions
 
 <ResponseField name="Content type" type="application/json">
@@ -53,7 +57,8 @@ surfaces do not:
 
 <ResponseField name="Errors" type="{ error: true, message }">
   Plus `issues` on validation failures, `requiredScope` on a scope refusal, `sandboxMerchants`
-  on sandbox confinement. See [Errors and limits](/errors-and-limits).
+  on sandbox confinement, `planCeilingUsd` when `maxCost` exceeds the plan's per-checkout
+  ceiling. See [Errors and limits](/errors-and-limits).
 </ResponseField>
 
 <ResponseField name="Scopes" type="<resource>.read | <resource>.write | *">
@@ -166,6 +171,28 @@ a minted JWT rather than an API key, and returns HTML and `text/event-stream`. S
 | Method | Path | Scope |
 | --- | --- | --- |
 | `GET` | `/v1/usage` | `usage.read` |
+
+### Workspaces (dashboard session only)
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `GET` | `/v1/workspaces/me` | session |
+| `POST` | `/v1/workspaces` | session |
+
+### Billing (dashboard session only)
+
+| Method | Path | Auth |
+| --- | --- | --- |
+| `GET` | `/v1/billing` | session |
+| `POST` | `/v1/billing/checkout-session` | session |
+| `POST` | `/v1/billing/portal-session` | session |
+| `POST` | `/v1/billing/verification-session` | session |
+| `POST` | `/v1/billing/accept-aup` | session |
+
+These are the routes behind the dashboard's onboarding and billing pages — provisioning a
+workspace, choosing a plan, identity verification, the AUP, and the activation checklist. An
+API key on any of them is a `401`, whatever its scopes. The flow they implement is
+documented in [Going live](/going-live).
 
 ### Live view (embed-token auth)
 

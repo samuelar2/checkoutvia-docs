@@ -1,6 +1,6 @@
 ---
 title: "Authentication"
-description: "Bearer API keys, the scopes they carry, how they are stored, how to rotate them, and what key mode actually controls."
+description: "Bearer API keys, the scopes they carry, how they are stored, what key mode actually controls — and the dashboard session, the credential humans hold."
 ---
 
 Every call to `/v1/*` except `POST /v1/signup` requires a bearer token:
@@ -10,9 +10,13 @@ curl https://api.farthing.ai/v1/checkouts \
   -H "authorization: Bearer ck_test_3sQd7yQ0mHq9pP2rVwXk1tLb"
 ```
 
-There is no other auth scheme. No query-string keys, no HMAC request signing, no OAuth. The
-one exception is the live-view embed, which is gated by a separate short-lived JWT rather
-than your API key — see [Live view](/live-view).
+Two credentials arrive on that header: **API keys**, which this page is mostly about, and
+**[dashboard sessions](#dashboard-sessions)** — the short-lived token a signed-in human
+holds at `app.farthing.ai`. Keys are for agents; sessions are for the person in the
+dashboard, and your integration never handles one. There is no third scheme — no
+query-string keys, no HMAC request signing, no OAuth. The one exception is the live-view
+embed, which is gated by a separate short-lived JWT rather than your API key — see
+[Live view](/live-view).
 
 ## Key format
 
@@ -52,12 +56,17 @@ buyer-sessions.read   buyer-sessions.write
 webhooks.read         webhooks.write
 api-keys.read         api-keys.write
 usage.read            usage.write
+billing.read          billing.write
 *
 ```
 
 The resources are exactly the route groups mounted under `/v1`, so the boundary you reason
 about — "this key may read checkouts and nothing else" — is the same boundary the code
 enforces. There is no mapping table in between to fall out of date.
+
+The `billing.*` scopes exist because the route group does, but they buy a key nothing:
+`/v1/billing` refuses API keys outright, whatever their scopes — see
+[dashboard sessions](#dashboard-sessions).
 
 ### The three rules
 
@@ -106,9 +115,9 @@ remembering.
 `requiredScope` is there so you never have to parse the message.
 
 <Note>
-An unrecognised resource is denied, not allowed. A path under `/v1` that is not one of the six
-resources returns `404 Unknown resource` — a new route group is unreachable until it is named
-in the scope list, which is the failure direction you want.
+An unrecognised resource is denied, not allowed. A path under `/v1` that is not one of the
+seven resources returns `404 Unknown resource` — a new route group is unreachable until it is
+named in the scope list, which is the failure direction you want.
 </Note>
 
 ### Why this matters more for agents
@@ -296,6 +305,10 @@ narrowing.
 With an activated account and a live key in hand, `{"mode":"live"}` works, and only then can any of
 its keys reach a real merchant.
 
+Where the first live key comes from: the dashboard. A [dashboard session](#dashboard-sessions)
+on an activated workspace counts as a live-mode credential, so the workspace owner mints the
+first `ck_live_` key there — see [Going live](/going-live#your-first-live-key).
+
 <Tip>
 This gives you a genuinely spend-proof credential for CI, staging, and anything running
 unattended: issue a `test` key. It exercises the entire product — real browser, real
@@ -309,23 +322,62 @@ Mode, scopes and `subject` are all fixed at creation. There is no way to promote
 revoke the old one.
 </Note>
 
+## Dashboard sessions
+
+The second credential, stated briefly because an integration never touches it.
+
+When you are signed in at `app.farthing.ai`, your browser holds a short-lived session token
+(a Clerk JWT, expiring in about a minute), and the dashboard calls this same API with it —
+same `Authorization: Bearer` header, dispatched by shape: a session token is a JWT, a key
+starts with `ck_`, and neither can be mistaken for the other.
+
+What a session gets:
+
+- **Your workspace, from membership** — never from anything the request claims. It acts as
+  the owner: full scopes, no `subject` binding, and key mode follows the workspace's state —
+  a sandbox workspace's session behaves like a test key, an activated one like a live key.
+- **The session-only surface.** `/v1/workspaces` (provisioning) and `/v1/billing` (plan,
+  identity verification, AUP) refuse API keys with `401`. Money and membership are decisions
+  the accountable human makes in a browser — and refusing keys there means a leaked agent
+  key cannot re-plan, de-verify, or re-terms a workspace.
+
+What a session cannot do: exist outside Clerk. There is no endpoint that mints one and no
+way to derive one from a key, so the session-only surface is unreachable to any credential
+you could leak into an agent.
+
+One session-specific refusal to know: a valid session whose account has no workspace yet
+gets `403` on `/v1/*` with a machine-readable marker —
+
+```json 403
+{ "error": true, "message": "No workspace for this account", "code": "no_workspace" }
+```
+
+— and the same `code` with `404` on `GET /v1/workspaces/me`. `POST /v1/workspaces` is the
+fix. The dashboard keys its onboarding off that code; nothing agent-facing ever produces it.
+
 ## Auth failures
 
 | Status | Body `message` | Cause |
 | --- | --- | --- |
 | `401` | `Missing bearer token` | No `Authorization` header, or it does not match `Bearer <token>`. |
 | `401` | `Invalid or revoked API key` | The token's hash matches no active key row. |
-| `403` | `Tenant suspended` | The key is valid but the tenant has `suspended_at` set. Contact us. |
+| `401` | `Invalid session token: …` | A [dashboard session](#dashboard-sessions) that failed verification — expired, wrong issuer, minted for another application. |
+| `401` | `… requires a dashboard session, not an API key` | An API key on the session-only surface: `/v1/workspaces` or `/v1/billing`. |
+| `403` | `Tenant suspended` | The credential is valid but the tenant has `suspended_at` set. Contact us. |
 | `403` | `This API key is missing the '<scope>' scope.` | The key authenticated but is not scoped for this route. Carries `requiredScope`. |
 | `403` | `A subject-bound key cannot …` | The key is [bound to one end user](/end-user-isolation) and asked for an account-wide fact: the key list, usage, or webhooks. |
-| `404` | `Unknown resource` | A path under `/v1` that is not one of the six scoped resources. |
+| `403` | `No workspace for this account` | A valid session with no workspace yet. Carries `code: "no_workspace"`. |
+| `404` | `Unknown resource` | A path under `/v1` that is not one of the seven scoped resources. |
 
 They all come back as `{ "error": true, "message": "..." }`. There is no distinction in the
 401 between "never existed" and "revoked" — deliberately, since that difference is only
 useful to someone probing.
 
-Note the ordering: authentication runs first, then scope. A revoked key gets `401` whatever it
-was asking for; a valid but narrow key gets `403` with the scope named.
+Note the ordering: authentication runs first, then scope, then any route-specific check. A
+revoked key gets `401` whatever it was asking for; a valid but narrow key gets `403` with the
+scope named. One consequence on `/v1/billing`: a key without `billing.*` scopes gets the
+scope `403` first, while a full-access key reaches the session-only check and gets its `401`
+— either way, no API key gets in.
 
 <Note>
 `lastUsedAt` is written best-effort on every authenticated request and never blocks it. Treat

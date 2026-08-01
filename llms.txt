@@ -13,10 +13,12 @@ Key facts an agent should hold before reading further:
 - A key can also be bound to one end user with `subject`, after which it sees and creates only that person's rows. Use it when one agent acts for many people: a prompt-injected "list the buyer profiles" should reach one buyer, not all of them. `subject` is 1 to 200 characters — `""` is a `400`, and so is an unrecognised top-level field on any create body.
 - Send an `Idempotency-Key` header on `POST /v1/checkouts`. A replay returns the original checkout with `200`; without the header a retried timeout buys the item twice. A key is live for 24 hours, then the same string starts a new purchase.
 - There is no product search. You bring a URL a person could buy from.
+- Pricing: sandbox is free with no card; paid plans are Personal $9 / Business $49 / Scale $249 per month, plus a flat $1.00 per completed checkout on every tier. Failed and cancelled checkouts are never billed. Going live is self-serve — paid plan + Stripe Identity verification + accepted AUP — and activation is automatic.
 
 ## Getting started
 
 - [Introduction](https://docs.farthing.ai/introduction): What Farthing does, what it refuses to do, and the shape of the integration.
+- [Pricing](https://docs.farthing.ai/pricing): A monthly platform fee plus $1.00 per completed checkout. Failed and cancelled checkouts are never billed, on any tier.
 - [Quickstart](https://docs.farthing.ai/quickstart): Sign up, buy something, answer a variant and a card action — curl then TypeScript.
 - [Use Farthing from an LLM agent](https://docs.farthing.ai/agents): Tool definitions for Anthropic and OpenAI, the polling loop, and which questions a model may answer for itself.
 - [Authentication](https://docs.farthing.ai/authentication): Bearer keys, scopes, rotation, and what key mode enforces.
@@ -37,6 +39,7 @@ Key facts an agent should hold before reading further:
 ## Operating the API
 
 - [Sandbox](https://docs.farthing.ai/sandbox): A real browser placing a real order on a store we control, with no path to a real merchant.
+- [Going live](https://docs.farthing.ai/going-live): Three self-serve facts — a paid plan, a verified identity, an accepted AUP — and the workspace activates itself. No approval queue.
 - [Errors and limits](https://docs.farthing.ai/errors-and-limits): Every status code, idempotent retries with `Idempotency-Key`, the quotas and their numbers, how maxCost is enforced, and what is honestly missing.
 
 ## API reference
@@ -51,6 +54,7 @@ Key facts an agent should hold before reading further:
 - [Webhooks](https://docs.farthing.ai/api-reference/webhooks): Register, list and revoke endpoints.
 - [API keys](https://docs.farthing.ai/api-reference/api-keys): Create with scopes, list, revoke.
 - [Usage](https://docs.farthing.ai/api-reference/usage): Completed checkouts by day and gross merchandise volume.
+- Workspaces and billing: the session-only routes behind the dashboard (workspace provisioning, plans, identity verification, AUP). Described in [Going live](https://docs.farthing.ai/going-live) and in the OpenAPI spec; API keys are refused there.
 
 ## Optional
 
