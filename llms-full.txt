@@ -1333,7 +1333,7 @@ for as long as it is live.
 ## The zero-code option: MCP
 
 ```bash
-npx farthing-mcp
+npx farthing
 ```
 
 The MCP server exposes the same surface as tools, so an MCP-capable client — Claude Desktop,
@@ -1345,7 +1345,7 @@ Claude Code, or your own harness — can drive a checkout with no integration co
   "mcpServers": {
     "farthing": {
       "command": "npx",
-      "args": ["-y", "farthing-mcp"],
+      "args": ["-y", "farthing"],
       "env": { "FARTHING_API_KEY": "ck_test_..." }
     }
   }
