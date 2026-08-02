@@ -638,10 +638,12 @@ Five tools:
 At the card step the server leads with the merchant's own order total, because that is the
 last moment the price can be questioned before money moves.
 
-`farthing_create_checkout` is annotated `idempotentHint: false`, honestly: the server sends no
-`Idempotency-Key` and will not invent one on your behalf, so two calls are two purchases. Your
-MCP client's own retry or approval behaviour is what stands between a flaky connection and a
-second order — another reason a production integration talks to the HTTP API.
+`farthing_create_checkout` accepts an optional `idempotencyKey`. Pass a unique value per
+intended purchase and retry with the **same** value: a replay returns the original checkout
+instead of buying the item twice. The server will not invent one on your behalf, because only
+the caller knows whether a second call means "I retried" or "buy another" — so the tool is
+annotated `idempotentHint: false`, and without the key two calls are two purchases. The key
+must come from your integration, never from the model.
 
 It **refuses card, credentials and OTP values as tool arguments**, by design and for the reason
 above: those are not things a model should be holding. When a run blocks on one of them, the
